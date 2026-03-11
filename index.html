@@ -1,0 +1,1112 @@
+<!doctype html>
+<html lang="en" class="dark">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Linemark</title>
+    <!--__DIFF_DATA__-->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              gh: {
+                bg: "#0d1117",
+                surface: "#161b22",
+                border: "#30363d",
+                text: "#e6edf3",
+                muted: "#8b949e",
+                accent: "#58a6ff",
+                green: "#238636",
+                greenHover: "#2ea043",
+                blue: "#1f6feb",
+                blueHover: "#388bfd",
+                commentBg: "#1c2128",
+              },
+              diff: {
+                delBg: "rgba(248, 81, 73, 0.1)",
+                delNum: "rgba(248, 81, 73, 0.2)",
+                delWord: "rgba(248, 81, 73, 0.3)",
+                insBg: "rgba(63, 185, 80, 0.1)",
+                insNum: "rgba(63, 185, 80, 0.2)",
+                insWord: "rgba(63, 185, 80, 0.3)",
+                emptyBg: "rgba(22, 27, 34, 0.5)",
+                hunkBg: "rgba(88, 166, 255, 0.08)",
+                selectBg: "rgba(88, 166, 255, 0.12)",
+              },
+            },
+            fontFamily: {
+              mono: ['"SF Mono"', "Menlo", "monospace"],
+            },
+          },
+        },
+      };
+    </script>
+    <script src="https://cdn.jsdelivr.net/npm/diff2html@3.4.48/bundles/js/diff2html.min.js"></script>
+    <link
+      rel="stylesheet"
+      href="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css"
+    />
+    <script src="https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/highlight.min.js"></script>
+    <style>
+      pre code.hljs,
+      code.hljs,
+      .hljs {
+        background: transparent !important;
+        padding: 0 !important;
+        margin: 0 !important;
+        display: inline !important;
+        font: inherit !important;
+        line-height: inherit !important;
+        overflow: visible !important;
+      }
+      .diff-linenum::before {
+        content: "+";
+        position: absolute;
+        left: 2px;
+        top: 50%;
+        transform: translateY(-50%);
+        width: 18px;
+        height: 18px;
+        background: #1f6feb;
+        color: white;
+        border-radius: 3px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 700;
+        line-height: 1;
+        z-index: 5;
+        box-shadow: 0 1px 3px rgba(0, 0, 0, 0.3);
+      }
+      .diff-linenum:not(.empty):hover::before {
+        display: flex;
+      }
+      .diff-linenum:not(.empty):hover {
+        background: #1f6feb !important;
+        color: white !important;
+      }
+      .side-select-range {
+        background: rgba(88, 166, 255, 0.06);
+      }
+      .side-select-range .diff-linenum {
+        box-shadow: inset 3px 0 0 0 #58a6ff;
+      }
+      .diff-file {
+        overflow: clip;
+      }
+      .diff-file-content > :last-child {
+        border-bottom: none;
+      }
+    </style>
+  </head>
+  <body class="bg-gh-bg text-gh-text font-sans">
+    <div id="app"></div>
+
+    <script>
+      (function () {
+        const diffData = window.__DIFF_DATA__;
+        const app = document.getElementById("app");
+
+        function esc(s) {
+          return s
+            .replace(/&/g, "&amp;")
+            .replace(/</g, "&lt;")
+            .replace(/>/g, "&gt;")
+            .replace(/"/g, "&quot;");
+        }
+
+        if (!diffData || !diffData.patch) {
+          app.innerHTML =
+            '<div class="text-center py-24 text-gh-muted text-lg">No changes to review.</div>';
+          return;
+        }
+
+        const annotations = new Map();
+        let submitted = false;
+        let viewMode = "split";
+
+        const viewedFiles = new Set();
+
+        function setViewed(fileName, viewed) {
+          if (viewed) {
+            viewedFiles.add(fileName);
+          } else {
+            viewedFiles.delete(fileName);
+          }
+          updateViewedCount();
+          const treeEl = document.querySelector(`[data-tree-file="${CSS.escape(fileName)}"]`);
+          if (treeEl) {
+            treeEl.className = treeEl.className.replace(
+              /text-gh-(text|muted)/,
+              viewed ? "text-gh-muted" : "text-gh-text",
+            );
+            const existing = treeEl.querySelector(".viewed-check");
+            if (viewed && !existing) {
+              const check = document.createElement("svg");
+              check.className = "w-3 h-3 text-green-400 shrink-0 viewed-check";
+              check.setAttribute("viewBox", "0 0 16 16");
+              check.setAttribute("fill", "currentColor");
+              check.innerHTML =
+                '<path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.751.751 0 01.018-1.042.751.751 0 011.042-.018L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/>';
+              treeEl.appendChild(check);
+            } else if (!viewed && existing) {
+              existing.remove();
+            }
+          }
+        }
+
+        function updateViewedCount() {
+          const el = document.getElementById("viewed-count");
+          if (el) el.textContent = `${viewedFiles.size} / ${fileStats.length} viewed`;
+        }
+
+        const Diff2Html = window.Diff2Html;
+        const parsedFiles = Diff2Html ? Diff2Html.parse(diffData.patch) : [];
+
+        const fileStats = parsedFiles.map((f) => ({
+          name: f.newName || f.oldName,
+          adds: f.addedLines,
+          dels: f.deletedLines,
+        }));
+        const totalAdds = fileStats.reduce((s, f) => s + f.adds, 0);
+        const totalDels = fileStats.reduce((s, f) => s + f.dels, 0);
+
+        function buildFileTree(files) {
+          const dirs = new Map();
+          for (const f of files) {
+            const parts = f.name.split("/");
+            const fileName = parts.pop();
+            const dir = parts.join("/") || ".";
+            if (!dirs.has(dir)) dirs.set(dir, []);
+            dirs.get(dir).push({ ...f, shortName: fileName });
+          }
+          let html = "";
+          for (const [dir, dirFiles] of dirs) {
+            html += `<div class="flex items-center gap-1.5 px-3 pt-2 pb-1 text-[12px] text-gh-muted">
+        <svg class="w-4 h-4 text-gh-accent" viewBox="0 0 16 16" fill="currentColor"><path d="M1.75 1A1.75 1.75 0 000 2.75v10.5C0 14.216.784 15 1.75 15h12.5A1.75 1.75 0 0016 13.25v-8.5A1.75 1.75 0 0014.25 3H7.5a.25.25 0 01-.2-.1l-.9-1.2C6.07 1.26 5.55 1 5 1H1.75z"/></svg>
+        <span class="font-semibold truncate">${esc(dir)}</span>
+      </div>`;
+            for (const f of dirFiles) {
+              const viewed = viewedFiles.has(f.name);
+              html += `<a class="flex items-center px-3 py-1 text-[13px] font-mono no-underline gap-1.5 hover:bg-gh-accent/10 rounded mx-1 group ${viewed ? "text-gh-muted" : "text-gh-text"}" href="#file-${CSS.escape(f.name)}" title="${esc(f.name)}" data-tree-file="${esc(f.name)}">
+          <svg class="w-4 h-4 text-gh-muted shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75z"/></svg>
+          <span class="truncate">${esc(f.shortName)}</span>
+          <span class="ml-auto text-[11px] whitespace-nowrap opacity-70 group-hover:opacity-100">
+            ${f.adds ? `<span class="text-green-400">+${f.adds}</span>` : ""}
+            ${f.dels ? ` <span class="text-red-400">-${f.dels}</span>` : ""}
+          </span>
+          ${viewed ? '<svg class="w-3 h-3 text-green-400 shrink-0" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.751.751 0 01.018-1.042.751.751 0 011.042-.018L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>' : ""}
+        </a>`;
+            }
+          }
+          return html;
+        }
+
+        function buildStatBar(adds, dels) {
+          const total = adds + dels || 1;
+          const segments = 5;
+          const a = Math.round((adds / total) * segments);
+          const d = Math.round((dels / total) * segments);
+          const e = segments - a - d;
+          let h = '<div class="flex gap-px h-2">';
+          for (let i = 0; i < a; i++)
+            h += '<span class="w-1.5 h-2 rounded-sm bg-green-500"></span>';
+          for (let i = 0; i < d; i++) h += '<span class="w-1.5 h-2 rounded-sm bg-red-500"></span>';
+          for (let i = 0; i < e; i++)
+            h += '<span class="w-1.5 h-2 rounded-sm bg-gh-border"></span>';
+          return h + "</div>";
+        }
+
+        function pairLines(lines) {
+          const pairs = [];
+          let i = 0;
+          while (i < lines.length) {
+            const line = lines[i];
+            if (line.type === "context") {
+              pairs.push({ left: line, right: line, type: "context" });
+              i++;
+            } else if (line.type === "delete") {
+              const dels = [];
+              while (i < lines.length && lines[i].type === "delete") {
+                dels.push(lines[i]);
+                i++;
+              }
+              const inss = [];
+              while (i < lines.length && lines[i].type === "insert") {
+                inss.push(lines[i]);
+                i++;
+              }
+              const max = Math.max(dels.length, inss.length);
+              for (let j = 0; j < max; j++) {
+                pairs.push({ left: dels[j] || null, right: inss[j] || null, type: "change" });
+              }
+            } else if (line.type === "insert") {
+              pairs.push({ left: null, right: line, type: "change" });
+              i++;
+            } else {
+              i++;
+            }
+          }
+          return pairs;
+        }
+
+        const EXT_TO_LANG = {
+          js: "javascript",
+          jsx: "javascript",
+          ts: "typescript",
+          tsx: "typescript",
+          py: "python",
+          rb: "ruby",
+          go: "go",
+          rs: "rust",
+          java: "java",
+          c: "c",
+          cpp: "cpp",
+          cs: "csharp",
+          swift: "swift",
+          kt: "kotlin",
+          php: "php",
+          sh: "bash",
+          bash: "bash",
+          zsh: "bash",
+          yml: "yaml",
+          yaml: "yaml",
+          json: "json",
+          html: "xml",
+          xml: "xml",
+          css: "css",
+          scss: "scss",
+          sql: "sql",
+          md: "markdown",
+          toml: "ini",
+          prisma: "prisma",
+          mjs: "javascript",
+          cjs: "javascript",
+          mts: "typescript",
+          cts: "typescript",
+        };
+
+        function langFromFile(name) {
+          const ext = name.split(".").pop()?.toLowerCase();
+          return EXT_TO_LANG[ext] || null;
+        }
+
+        function highlightCode(code, lang) {
+          if (!lang || !window.hljs) return esc(code);
+          try {
+            const result = window.hljs.highlight(code, { language: lang, ignoreIllegals: true });
+            return result.value;
+          } catch {
+            return esc(code);
+          }
+        }
+
+        let currentFileLang = null;
+
+        function renderCode(content, type) {
+          if (!content) return "";
+          const prefix = content[0];
+          const code = content.substring(1);
+          const highlighted = highlightCode(code, currentFileLang);
+          const prefixSpan =
+            type === "delete"
+              ? '<span class="select-none text-red-400/70">-</span>'
+              : type === "insert"
+                ? '<span class="select-none text-green-400/70">+</span>'
+                : '<span class="select-none text-gh-muted"> </span>';
+          return `${prefixSpan}${highlighted}`;
+        }
+
+        function sideClasses(type) {
+          if (type === "del") return { num: "bg-diff-delNum", content: "bg-diff-delBg" };
+          if (type === "ins") return { num: "bg-diff-insNum", content: "bg-diff-insBg" };
+          if (type === "empty") return { num: "bg-gh-surface", content: "bg-diff-emptyBg" };
+          return { num: "bg-gh-surface", content: "" };
+        }
+
+        const LINENUM_CLASSES =
+          "relative w-[50px] min-w-[50px] px-2 text-right font-mono text-xs text-gh-muted select-none cursor-pointer flex items-center justify-end";
+        const CODE_CLASSES =
+          "flex-1 min-w-0 px-3 font-mono text-[13px] leading-5 whitespace-pre-wrap break-words";
+
+        const CHEVRON_DOWN =
+          '<svg class="w-3.5 h-3.5 transition-transform" viewBox="0 0 16 16" fill="currentColor"><path d="M4.427 7.427l3.396 3.396a.25.25 0 00.354 0l3.396-3.396A.25.25 0 0011.396 7H4.604a.25.25 0 00-.177.427z"/></svg>';
+        const COPY_ICON =
+          '<svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M0 6.75C0 5.784.784 5 1.75 5h1.5a.75.75 0 010 1.5h-1.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-1.5a.75.75 0 011.5 0v1.5A1.75 1.75 0 019.25 16h-7.5A1.75 1.75 0 010 14.25v-7.5z"/><path d="M5 1.75C5 .784 5.784 0 6.75 0h7.5C15.216 0 16 .784 16 1.75v7.5A1.75 1.75 0 0114.25 11h-7.5A1.75 1.75 0 015 9.25v-7.5zm1.75-.25a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h7.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25h-7.5z"/></svg>';
+        const FILE_ICON =
+          '<svg class="w-4 h-4 text-gh-muted" viewBox="0 0 16 16" fill="currentColor"><path d="M2 1.75C2 .784 2.784 0 3.75 0h6.586c.464 0 .909.184 1.237.513l2.914 2.914c.329.328.513.773.513 1.237v9.586A1.75 1.75 0 0113.25 16h-9.5A1.75 1.75 0 012 14.25V1.75zm1.75-.25a.25.25 0 00-.25.25v12.5c0 .138.112.25.25.25h9.5a.25.25 0 00.25-.25V6h-2.75A1.75 1.75 0 019 4.25V1.5H3.75zm6.75.062V4.25c0 .138.112.25.25.25h2.688l-.011-.013-2.914-2.914-.013-.011z"/></svg>';
+        const COMMENT_ICON =
+          '<svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M1 2.75C1 1.784 1.784 1 2.75 1h10.5c.966 0 1.75.784 1.75 1.75v7.5A1.75 1.75 0 0113.25 12H9.06l-2.573 2.573A1.458 1.458 0 014 13.543V12H2.75A1.75 1.75 0 011 10.25v-7.5zM2.75 2.5a.25.25 0 00-.25.25v7.5c0 .138.112.25.25.25h2a.75.75 0 01.75.75v2.19l2.72-2.72a.749.749 0 01.53-.22h4.5a.25.25 0 00.25-.25v-7.5a.25.25 0 00-.25-.25H2.75z"/></svg>';
+
+        function renderFileHeader(file, name) {
+          const stat = fileStats.find((f) => f.name === name);
+          return `<div class="diff-file-header sticky top-[41px] z-10 bg-gh-surface border-b border-gh-border rounded-t-lg px-3 py-1.5 flex items-center gap-2" data-file-header="${esc(name)}">
+      <button class="collapse-btn text-gh-muted hover:text-gh-text p-1 rounded hover:bg-gh-accent/10 transition-colors flex items-center justify-center" data-collapse="${esc(name)}" title="Toggle file">${CHEVRON_DOWN}</button>
+      ${FILE_ICON}
+      <span class="font-mono text-[13px] font-semibold truncate">${esc(name)}</span>
+      <button class="text-gh-muted hover:text-gh-text p-0.5 rounded hover:bg-gh-accent/10 transition-colors" data-copy-path="${esc(name)}" title="Copy file path">${COPY_ICON}</button>
+      <button class="file-comment-btn text-gh-muted hover:text-gh-accent p-0.5 rounded hover:bg-gh-accent/10 transition-colors" data-file-comment="${esc(name)}" title="Add file-level comment">${COMMENT_ICON}</button>
+      <span class="ml-auto flex items-center gap-3">
+        <span class="font-mono text-xs">
+          ${stat?.adds ? `<span class="text-green-400 font-semibold">+${stat.adds}</span>` : ""}
+          ${stat?.dels ? ` <span class="text-red-400 font-semibold">-${stat.dels}</span>` : ""}
+        </span>
+        ${stat ? buildStatBar(stat.adds, stat.dels) : ""}
+        <label class="flex items-center gap-1.5 text-xs text-gh-muted cursor-pointer select-none whitespace-nowrap">
+          <input type="checkbox" class="viewed-checkbox accent-gh-accent" data-viewed="${esc(name)}" ${viewedFiles.has(name) ? "checked" : ""} />
+          Viewed
+        </label>
+      </span>
+    </div>`;
+        }
+
+        function parseHunkHeader(header) {
+          const m = header.match(/@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@/);
+          if (!m) return null;
+          return {
+            oldStart: +m[1],
+            oldCount: +(m[2] ?? 1),
+            newStart: +m[3],
+            newCount: +(m[4] ?? 1),
+          };
+        }
+
+        const EXPAND_ICON =
+          '<svg class="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M8.177.677l2.896 2.896a.25.25 0 01-.177.427H8.75v1.25a.75.75 0 01-1.5 0V4H5.104a.25.25 0 01-.177-.427L7.823.677a.25.25 0 01.354 0zM7.25 10.75a.75.75 0 011.5 0V12h2.146a.25.25 0 01.177.427l-2.896 2.896a.25.25 0 01-.354 0l-2.896-2.896A.25.25 0 015.104 12H7.25v-1.25zm-5-2a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zM6 8a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5A.75.75 0 016 8zm1.5.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zm1.75-.75a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm1.5.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5zm1.75-.75a.75.75 0 01-.75.75h-.5a.75.75 0 010-1.5h.5a.75.75 0 01.75.75zm1.5.75a.75.75 0 000-1.5h-.5a.75.75 0 000 1.5h.5z"/></svg>';
+
+        function renderExpandBar(fileName, fromOld, toOld, fromNew, toNew, direction) {
+          if (toOld <= fromOld && toNew <= fromNew) return "";
+          return `<div class="expand-bar bg-diff-hunkBg hover:bg-diff-selectBg text-gh-muted hover:text-gh-accent text-xs px-4 py-0.5 border-b border-gh-border cursor-pointer flex items-center gap-2 transition-colors" data-expand-file="${esc(fileName)}" data-expand-from-old="${fromOld}" data-expand-to-old="${toOld}" data-expand-from-new="${fromNew}" data-expand-to-new="${toNew}" data-expand-dir="${direction}">${EXPAND_ICON}<span class="font-mono">Expand ${direction}</span></div>`;
+        }
+
+        function renderHunkHeader(block) {
+          return `<div class="bg-diff-hunkBg text-gh-muted font-mono text-xs px-4 py-1 border-b border-gh-border">${esc(block.header)}</div>`;
+        }
+
+        function renderSplitDiff() {
+          let html = "";
+          for (const file of parsedFiles) {
+            const name = file.newName || file.oldName;
+            currentFileLang = langFromFile(name);
+            html += `<div class="diff-file border border-gh-border rounded-lg mb-4" id="file-${CSS.escape(name)}">`;
+            html += renderFileHeader(file, name);
+            html += `<div class="diff-file-content">`;
+
+            let prevOldEnd = 0,
+              prevNewEnd = 0;
+            for (let bi = 0; bi < file.blocks.length; bi++) {
+              const block = file.blocks[bi];
+              const hunk = parseHunkHeader(block.header);
+              if (hunk && hunk.oldStart > prevOldEnd + 1) {
+                html += renderExpandBar(
+                  name,
+                  prevOldEnd + 1,
+                  hunk.oldStart - 1,
+                  prevNewEnd + 1,
+                  hunk.newStart - 1,
+                  "up",
+                );
+              }
+              html += renderHunkHeader(block);
+              const pairs = pairLines(block.lines);
+
+              for (const pair of pairs) {
+                const leftNum = pair.left?.oldNumber ?? "";
+                const rightNum = pair.right?.newNumber ?? "";
+                const lt = !pair.left ? "empty" : pair.left.type === "delete" ? "del" : "";
+                const rt = !pair.right ? "empty" : pair.right.type === "insert" ? "ins" : "";
+                const lc = sideClasses(lt);
+                const rc = sideClasses(rt);
+
+                html += `<div class="diff-row flex border-b border-gh-border/40" data-file="${esc(name)}" data-left="${leftNum}" data-right="${rightNum}">`;
+                html += `<div class="diff-side flex flex-1 min-w-0 border-r border-gh-border" data-side-type="left">`;
+                html += `<div class="diff-linenum ${lc.num} ${leftNum === "" ? "empty" : ""} ${LINENUM_CLASSES}" data-side="left" data-line="${leftNum}">${leftNum}</div>`;
+                html += `<div class="${lc.content} ${CODE_CLASSES}">${pair.left ? renderCode(pair.left.content, pair.left.type) : ""}</div>`;
+                html += `</div>`;
+                html += `<div class="diff-side flex flex-1 min-w-0" data-side-type="right">`;
+                html += `<div class="diff-linenum ${rc.num} ${rightNum === "" ? "empty" : ""} ${LINENUM_CLASSES}" data-side="right" data-line="${rightNum}">${rightNum}</div>`;
+                html += `<div class="${rc.content} ${CODE_CLASSES}">${pair.right ? renderCode(pair.right.content, pair.right.type) : ""}</div>`;
+                html += `</div>`;
+                html += `</div>`;
+              }
+              if (hunk) {
+                prevOldEnd = hunk.oldStart + hunk.oldCount - 1;
+                prevNewEnd = hunk.newStart + hunk.newCount - 1;
+              }
+            }
+            html += `</div>`;
+            html += `</div>`;
+          }
+          return html;
+        }
+
+        function renderUnifiedDiff() {
+          let html = "";
+          for (const file of parsedFiles) {
+            const name = file.newName || file.oldName;
+            currentFileLang = langFromFile(name);
+            html += `<div class="diff-file border border-gh-border rounded-lg mb-4" id="file-${CSS.escape(name)}">`;
+            html += renderFileHeader(file, name);
+            html += `<div class="diff-file-content">`;
+
+            let prevOldEnd = 0,
+              prevNewEnd = 0;
+            for (let bi = 0; bi < file.blocks.length; bi++) {
+              const block = file.blocks[bi];
+              const hunk = parseHunkHeader(block.header);
+              if (hunk && hunk.oldStart > prevOldEnd + 1) {
+                html += renderExpandBar(
+                  name,
+                  prevOldEnd + 1,
+                  hunk.oldStart - 1,
+                  prevNewEnd + 1,
+                  hunk.newStart - 1,
+                  "up",
+                );
+              }
+              html += renderHunkHeader(block);
+
+              for (const line of block.lines) {
+                const oldNum = line.oldNumber ?? "";
+                const newNum = line.newNumber ?? "";
+                const isDelete = line.type === "delete";
+                const isInsert = line.type === "insert";
+                const rowBg = isDelete ? "bg-diff-delBg" : isInsert ? "bg-diff-insBg" : "";
+                const numBg = isDelete
+                  ? "bg-diff-delNum"
+                  : isInsert
+                    ? "bg-diff-insNum"
+                    : "bg-gh-surface";
+
+                html += `<div class="diff-row flex border-b border-gh-border/40 ${rowBg}" data-file="${esc(name)}" data-left="${oldNum}" data-right="${newNum}">`;
+                html += `<div class="diff-linenum ${numBg} ${oldNum === "" ? "empty" : ""} ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
+                html += `<div class="diff-linenum ${numBg} ${newNum === "" ? "empty" : ""} ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
+                html += `<div class="${CODE_CLASSES}">${renderCode(line.content, line.type)}</div>`;
+                html += `</div>`;
+              }
+              if (hunk) {
+                prevOldEnd = hunk.oldStart + hunk.oldCount - 1;
+                prevNewEnd = hunk.newStart + hunk.newCount - 1;
+              }
+            }
+            html += `</div>`;
+            html += `</div>`;
+          }
+          return html;
+        }
+
+        function renderDiff() {
+          return viewMode === "split" ? renderSplitDiff() : renderUnifiedDiff();
+        }
+
+        const displayRef = diffData.resolvedRef || diffData.baseRef;
+        const currentBranch = diffData.branchName || diffData.headRef || "HEAD";
+
+        app.innerHTML = `
+    <div class="flex min-h-screen">
+      <div class="w-[260px] min-w-[260px] bg-gh-surface border-r border-gh-border overflow-y-auto sticky top-0 h-screen">
+        <div class="px-3 py-2 border-b border-gh-border">
+          <div class="text-xs text-gh-muted font-semibold mb-2">${fileStats.length} file${fileStats.length !== 1 ? "s" : ""} changed</div>
+          <input type="text" id="file-filter" class="w-full bg-gh-bg text-gh-text border border-gh-border rounded-md px-2 py-1 text-xs focus:outline-none focus:border-gh-accent focus:ring-1 focus:ring-gh-accent/30" placeholder="Filter files..." />
+        </div>
+        <div class="py-1" id="file-tree">${buildFileTree(fileStats)}</div>
+      </div>
+      <div class="flex-1 min-w-0 flex flex-col">
+        <div class="sticky top-0 z-[100] bg-gh-surface border-b border-gh-border px-4 py-2 flex items-center justify-between">
+          <div class="flex items-center gap-3">
+            <span class="text-gh-accent bg-gh-accent/10 px-1.5 py-0.5 rounded text-xs font-mono">${esc(currentBranch)}</span>
+            <span class="text-gh-muted text-[13px]">vs</span>
+            <span class="text-gh-accent bg-gh-accent/10 px-1.5 py-0.5 rounded text-xs font-mono">${esc(displayRef)}</span>
+            <span class="text-gh-muted text-xs">${fileStats.length} file${fileStats.length !== 1 ? "s" : ""} changed</span>
+            <span class="text-green-400 text-xs font-semibold">+${totalAdds}</span>
+            <span class="text-red-400 text-xs font-semibold">-${totalDels}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <div class="flex rounded-md border border-gh-border overflow-hidden" id="view-toggle">
+              <button class="px-2.5 py-1 text-xs font-medium bg-gh-accent/20 text-gh-accent" data-view="split">Split</button>
+              <button class="px-2.5 py-1 text-xs font-medium text-gh-muted hover:text-gh-text" data-view="unified">Unified</button>
+            </div>
+            <span class="text-gh-muted text-xs" id="viewed-count">${viewedFiles.size} / ${fileStats.length} viewed</span>
+            <span class="text-gh-muted text-xs px-2 py-0.5 rounded-full border border-gh-border font-semibold" id="comment-count">0 comments</span>
+          </div>
+        </div>
+        <div class="flex-1 px-4 py-4" id="diff-target">${renderDiff()}</div>
+        <div class="sticky bottom-0 z-[100] bg-gh-surface border-t border-gh-border px-4 py-3" id="general-comment-section">
+          <textarea id="general-comment" class="w-full min-h-[50px] bg-gh-bg text-gh-text border border-gh-border rounded-md px-3 py-2 text-[13px] resize-y focus:outline-none focus:border-gh-accent focus:ring-1 focus:ring-gh-accent/30 mb-1" placeholder="Leave a comment"></textarea>
+          <div class="image-preview-area flex flex-wrap overflow-visible"></div>
+          <div class="flex items-center justify-between mt-1.5">
+            <div class="flex items-center gap-2">
+              <button class="text-gh-muted border border-gh-border text-xs px-2 py-1 rounded-md hover:bg-gh-surface hover:text-gh-text transition-colors flex items-center gap-1" data-action="attach">
+                <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>
+                Attach
+              </button>
+              <span class="text-gh-muted text-xs px-2 py-0.5 rounded-full border border-gh-border font-semibold" id="comment-count-bottom">0 comments</span>
+            </div>
+            <div class="flex items-center gap-2">
+              <button class="text-gh-muted border border-gh-border rounded-md px-3 py-1.5 text-xs font-semibold hover:bg-gh-surface hover:text-gh-text transition-colors" id="btn-cancel">Cancel review</button>
+              <button class="bg-gh-green text-white rounded-md px-3 py-1.5 text-xs font-semibold hover:bg-gh-greenHover transition-colors flex items-center gap-1.5" id="btn-approve">
+                <svg class="w-3.5 h-3.5" viewBox="0 0 16 16" fill="currentColor"><path d="M13.78 4.22a.75.75 0 010 1.06l-7.25 7.25a.75.75 0 01-1.06 0L2.22 9.28a.751.751 0 01.018-1.042.751.751 0 011.042-.018L6 10.94l6.72-6.72a.75.75 0 011.06 0z"/></svg>
+                Approve
+              </button>
+              <button class="bg-gh-blue text-white rounded-md px-3 py-1.5 text-xs font-semibold hover:bg-gh-blueHover transition-colors" id="btn-submit">Submit feedback</button>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+
+        const targetEl = document.getElementById("diff-target");
+
+        // --- View mode toggle ---
+        document.getElementById("view-toggle").addEventListener("click", (e) => {
+          const btn = e.target.closest("button[data-view]");
+          if (!btn || btn.dataset.view === viewMode) return;
+          viewMode = btn.dataset.view;
+          document.querySelectorAll("#view-toggle button").forEach((b) => {
+            if (b.dataset.view === viewMode) {
+              b.className = "px-2.5 py-1 text-xs font-medium bg-gh-accent/20 text-gh-accent";
+            } else {
+              b.className = "px-2.5 py-1 text-xs font-medium text-gh-muted hover:text-gh-text";
+            }
+          });
+          targetEl.innerHTML = renderDiff();
+        });
+
+        // --- File filter ---
+        document.getElementById("file-filter")?.addEventListener("input", (e) => {
+          const q = e.target.value.toLowerCase();
+          document.querySelectorAll("#file-tree a").forEach((a) => {
+            a.style.display = a.title.toLowerCase().includes(q) ? "" : "none";
+          });
+        });
+
+        // --- Image support: paste, drag-and-drop, file picker ---
+        function setupImageSupport(container) {
+          const textarea = container.querySelector("textarea");
+          const previewArea = container.querySelector(".image-preview-area");
+          const attachBtn = container.querySelector('[data-action="attach"]');
+          const images = [];
+
+          function addImage(dataUrl) {
+            images.push(dataUrl);
+            const idx = images.length - 1;
+            const imgEl = document.createElement("div");
+            imgEl.className = "group/img relative inline-block mr-2 mb-2";
+            imgEl.innerHTML = `
+        <img src="${dataUrl}" class="max-h-[100px] rounded-lg border border-gh-border object-cover" />
+        <button class="absolute top-1.5 right-1.5 w-5 h-5 bg-gh-surface/90 text-gh-muted rounded-md border border-gh-border flex items-center justify-center hover:bg-red-600 hover:text-white hover:border-red-600 opacity-0 group-hover/img:opacity-100 transition-all cursor-pointer" data-remove-img="${idx}">
+          <svg class="w-3 h-3" viewBox="0 0 16 16" fill="currentColor"><path d="M3.72 3.72a.75.75 0 011.06 0L8 6.94l3.22-3.22a.75.75 0 111.06 1.06L9.06 8l3.22 3.22a.75.75 0 11-1.06 1.06L8 9.06l-3.22 3.22a.75.75 0 01-1.06-1.06L6.94 8 3.72 4.78a.75.75 0 010-1.06z"/></svg>
+        </button>
+      `;
+            previewArea.appendChild(imgEl);
+          }
+
+          function readFile(file) {
+            if (!file.type.startsWith("image/")) return;
+            const reader = new FileReader();
+            reader.onload = () => addImage(reader.result);
+            reader.readAsDataURL(file);
+          }
+
+          textarea.addEventListener("paste", (e) => {
+            const items = e.clipboardData?.items;
+            if (!items) return;
+            for (const item of items) {
+              if (item.type.startsWith("image/")) {
+                e.preventDefault();
+                readFile(item.getAsFile());
+                return;
+              }
+            }
+          });
+
+          textarea.addEventListener("dragover", (e) => {
+            e.preventDefault();
+            textarea.classList.add("border-gh-accent");
+          });
+          textarea.addEventListener("dragleave", () => {
+            textarea.classList.remove("border-gh-accent");
+          });
+          textarea.addEventListener("drop", (e) => {
+            e.preventDefault();
+            textarea.classList.remove("border-gh-accent");
+            for (const file of e.dataTransfer.files) readFile(file);
+          });
+
+          if (attachBtn) {
+            const fileInput = document.createElement("input");
+            fileInput.type = "file";
+            fileInput.accept = "image/*";
+            fileInput.multiple = true;
+            fileInput.style.display = "none";
+            container.appendChild(fileInput);
+            attachBtn.addEventListener("click", (e) => {
+              e.stopPropagation();
+              fileInput.click();
+            });
+            fileInput.addEventListener("change", () => {
+              for (const file of fileInput.files) readFile(file);
+              fileInput.value = "";
+            });
+          }
+
+          previewArea.addEventListener("click", (e) => {
+            const btn = e.target.closest("[data-remove-img]");
+            if (!btn) return;
+            const idx = parseInt(btn.dataset.removeImg, 10);
+            images[idx] = null;
+            btn.closest(".relative").remove();
+          });
+
+          return { addImage, getImages: () => images.filter(Boolean) };
+        }
+
+        // --- Comment system ---
+        const ATTACH_ICON =
+          '<svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 00-5.656-5.656l-6.415 6.585a6 6 0 108.486 8.486L20.5 13"></path></svg>';
+
+        function buildCommentFormHTML(label, existingText, hasExisting) {
+          return `
+      <div class="bg-gh-commentBg border-t border-gh-accent border-b border-b-gh-border p-3">
+        <div class="text-xs text-gh-muted mb-2 font-mono">${label}</div>
+        <textarea class="w-full min-h-[70px] bg-gh-bg text-gh-text border border-gh-border rounded-md px-3 py-2 text-[13px] resize-y focus:outline-none focus:border-gh-accent focus:ring-2 focus:ring-gh-accent/20" placeholder="Leave a comment">${esc(existingText)}</textarea>
+        <div class="image-preview-area flex flex-wrap overflow-visible mt-2"></div>
+        <div class="flex items-center gap-2 mt-2">
+          <button class="text-gh-muted border border-gh-border text-xs px-2 py-1 rounded-md hover:bg-gh-surface hover:text-gh-text transition-colors flex items-center gap-1" data-action="attach">
+            ${ATTACH_ICON} Attach
+          </button>
+          <span class="flex-1"></span>
+          ${hasExisting ? '<button class="text-gh-muted border border-gh-border text-xs px-3 py-1 rounded-md hover:bg-gh-surface transition-colors" data-action="delete">Delete</button>' : ""}
+          <button class="text-gh-muted border border-gh-border text-xs px-3 py-1 rounded-md hover:bg-gh-surface transition-colors" data-action="cancel">Cancel</button>
+          <button class="bg-gh-green text-white text-xs px-3 py-1 rounded-md font-semibold hover:bg-gh-greenHover transition-colors" data-action="save">Add comment</button>
+        </div>
+      </div>`;
+        }
+
+        function buildSavedHTML(a) {
+          const lbl =
+            a.type === "file"
+              ? `${esc(a.file)} (file comment)`
+              : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}`;
+          const imgHtml = (a.images || [])
+            .map(
+              (src) =>
+                `<img src="${src}" class="max-h-[100px] rounded-lg border border-gh-border mr-2 mt-1 object-cover" />`,
+            )
+            .join("");
+          return `
+      <div class="bg-gh-commentBg border-t border-gh-accent border-b border-b-gh-border p-3">
+        <div class="flex items-center justify-between mb-1">
+          <span class="text-xs text-gh-muted font-mono">${lbl}</span>
+          <button class="text-gh-muted border border-gh-border text-[11px] px-2 py-0.5 rounded hover:bg-gh-surface hover:text-gh-text transition-colors" data-action="edit">Edit</button>
+        </div>
+        <div class="text-[13px] text-gh-text whitespace-pre-wrap leading-relaxed">${esc(a.text)}</div>
+        ${imgHtml ? `<div class="flex flex-wrap mt-2">${imgHtml}</div>` : ""}
+      </div>`;
+        }
+
+        function wrapForLayout(innerHtml, side) {
+          const isUnified = viewMode === "unified";
+          const emptyHalf = '<div class="flex-1 min-w-0 bg-gh-surface/50"></div>';
+          if (isUnified || side === "file") {
+            return `<div class="flex-1 min-w-0">${innerHtml}</div>`;
+          } else if (side === "left") {
+            return `<div class="flex-1 min-w-0 border-r border-gh-border">${innerHtml}</div>${emptyHalf}`;
+          } else {
+            return `${emptyHalf}<div class="flex-1 min-w-0">${innerHtml}</div>`;
+          }
+        }
+
+        function setupCommentKeydown(commentRow) {
+          commentRow.querySelector("textarea")?.addEventListener("keydown", (ev) => {
+            if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+              ev.preventDefault();
+              commentRow.querySelector('[data-action="save"]')?.click();
+            }
+            if (ev.key === "Escape") {
+              commentRow.querySelector('[data-action="cancel"]')?.click();
+            }
+          });
+        }
+
+        // Unified comment row creation for both line-level and file-level comments
+        function createCommentRow(opts) {
+          const { key, label, side, annotation, anchorEl, onSave, onDelete, onEdit } = opts;
+          const useLayout = side !== "file";
+
+          const existing = document.querySelector(`[data-comment-key="${CSS.escape(key)}"]`);
+          if (existing) {
+            existing.querySelector("textarea")?.focus();
+            return;
+          }
+
+          const commentRow = document.createElement("div");
+          commentRow.className = useLayout
+            ? "flex border-b border-gh-border/40"
+            : "border-b border-gh-border/40";
+          commentRow.setAttribute("data-comment-key", key);
+
+          const existingAnn = annotations.get(key);
+          const formHtml = buildCommentFormHTML(
+            label,
+            existingAnn?.text || "",
+            annotations.has(key),
+          );
+          commentRow.innerHTML = useLayout ? wrapForLayout(formHtml, side) : formHtml;
+
+          anchorEl.after(commentRow);
+          const imgHandler = setupImageSupport(commentRow);
+          commentRow.querySelector("textarea")?.focus();
+
+          if (existingAnn?.images) {
+            for (const src of existingAnn.images) imgHandler.addImage(src);
+          }
+
+          function renderSaved() {
+            const savedHtml = buildSavedHTML(annotations.get(key));
+            commentRow.innerHTML = useLayout ? wrapForLayout(savedHtml, side) : savedHtml;
+          }
+
+          commentRow.addEventListener("click", (ev) => {
+            const action = ev.target.dataset?.action;
+            if (!action) return;
+            if (action === "save") {
+              const text = commentRow.querySelector("textarea").value.trim();
+              const images = imgHandler.getImages();
+              if (text || images.length) {
+                onSave(text, images);
+                renderSaved();
+              } else {
+                commentRow.remove();
+              }
+              clearHighlight();
+              updateCommentCount();
+            } else if (action === "delete") {
+              if (onDelete) onDelete();
+              annotations.delete(key);
+              commentRow.remove();
+              clearHighlight();
+              updateCommentCount();
+            } else if (action === "cancel") {
+              if (annotations.has(key)) {
+                renderSaved();
+              } else {
+                commentRow.remove();
+              }
+              clearHighlight();
+            } else if (action === "edit") {
+              commentRow.remove();
+              onEdit();
+            }
+          });
+
+          setupCommentKeydown(commentRow);
+        }
+
+        // --- Line-level comments ---
+        function showCommentForm(diffRow, side, lineNumEl, fromLine, toLine) {
+          const fileName = diffRow.dataset.file;
+          if (fromLine == null) {
+            fromLine = parseInt(lineNumEl.dataset.line, 10) || 0;
+            toLine = fromLine;
+          }
+          const lineLabel = fromLine === toLine ? `${fromLine}` : `${fromLine}-${toLine}`;
+          const key = `${fileName}:${lineLabel}:${side}`;
+          const label = `${esc(fileName)} line${fromLine !== toLine ? "s" : ""} ${lineLabel}`;
+
+          createCommentRow({
+            key,
+            label,
+            side,
+            anchorEl: diffRow,
+            onSave: (text, images) => {
+              annotations.set(key, {
+                file: fileName,
+                fromLine,
+                toLine,
+                side,
+                text,
+                images,
+              });
+              if (lineNumEl)
+                lineNumEl.classList.add("has-comment", "border-l-[3px]", "border-l-gh-accent");
+            },
+            onDelete: () => {
+              if (lineNumEl)
+                lineNumEl.classList.remove("has-comment", "border-l-[3px]", "border-l-gh-accent");
+            },
+            onEdit: () => showCommentForm(diffRow, side, lineNumEl, fromLine, toLine),
+          });
+        }
+
+        // --- File-level comments ---
+        function showFileComment(fileName, headerEl) {
+          const key = `${fileName}:file:file`;
+          const label = `${esc(fileName)} (file comment)`;
+
+          createCommentRow({
+            key,
+            label,
+            side: "file",
+            anchorEl: headerEl,
+            onSave: (text, images) => {
+              annotations.set(key, {
+                file: fileName,
+                fromLine: 0,
+                toLine: 0,
+                side: "file",
+                type: "file",
+                text,
+                images,
+              });
+            },
+            onEdit: () => showFileComment(fileName, headerEl),
+          });
+        }
+
+        targetEl.addEventListener("click", async (e) => {
+          const expandBar = e.target.closest(".expand-bar");
+          if (expandBar) {
+            const { expandFile, expandFromOld, expandToOld, expandFromNew, expandToNew } =
+              expandBar.dataset;
+            const fromNew = parseInt(expandFromNew, 10);
+            const toNew = parseInt(expandToNew, 10);
+            if (isNaN(fromNew) || isNaN(toNew) || toNew < fromNew) return;
+            expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono">Loading...</span>`;
+            try {
+              const res = await fetch(
+                `/api/context?file=${encodeURIComponent(expandFile)}&start=${fromNew}&end=${toNew}`,
+              );
+              const data = await res.json();
+              if (!data.lines) return;
+              const lang = langFromFile(expandFile);
+              let rowsHtml = "";
+              for (let i = 0; i < data.lines.length; i++) {
+                const oldNum = parseInt(expandFromOld, 10) + i;
+                const newNum = fromNew + i;
+                const code = data.lines[i];
+                const highlighted = highlightCode(code, lang);
+                const content = `<span class="select-none text-gh-muted"> </span>${highlighted}`;
+                if (viewMode === "split") {
+                  rowsHtml += `<div class="diff-row flex border-b border-gh-border/40" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
+                  rowsHtml += `<div class="diff-side flex flex-1 min-w-0 border-r border-gh-border" data-side-type="left">`;
+                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
+                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
+                  rowsHtml += `</div>`;
+                  rowsHtml += `<div class="diff-side flex flex-1 min-w-0" data-side-type="right">`;
+                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
+                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
+                  rowsHtml += `</div></div>`;
+                } else {
+                  rowsHtml += `<div class="diff-row flex border-b border-gh-border/40" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
+                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
+                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
+                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div></div>`;
+                }
+              }
+              const container = document.createElement("div");
+              container.innerHTML = rowsHtml;
+              expandBar.replaceWith(...container.children);
+            } catch {
+              expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono text-red-400">Failed to load</span>`;
+            }
+            return;
+          }
+
+          const collapseBtn = e.target.closest("[data-collapse]");
+          if (collapseBtn) {
+            const fileEl = collapseBtn.closest(".diff-file");
+            if (!fileEl) return;
+            const content = fileEl.querySelector(".diff-file-content");
+            if (!content) return;
+            const isCollapsed = content.style.display === "none";
+            content.style.display = isCollapsed ? "" : "none";
+            const svg = collapseBtn.querySelector("svg");
+            if (svg) svg.style.transform = isCollapsed ? "" : "rotate(-90deg)";
+            return;
+          }
+
+          const copyBtn = e.target.closest("[data-copy-path]");
+          if (copyBtn) {
+            navigator.clipboard.writeText(copyBtn.dataset.copyPath);
+            copyBtn.style.color = "#3fb950";
+            setTimeout(() => {
+              copyBtn.style.color = "";
+            }, 1000);
+            return;
+          }
+
+          const viewedCb = e.target.closest(".viewed-checkbox");
+          if (viewedCb) {
+            const fileName = viewedCb.dataset.viewed;
+            setViewed(fileName, viewedCb.checked);
+            const fileEl = viewedCb.closest(".diff-file");
+            if (fileEl) {
+              const content = fileEl.querySelector(".diff-file-content");
+              const svg = fileEl.querySelector(".collapse-btn svg");
+              if (content) {
+                content.style.display = viewedCb.checked ? "none" : "";
+                if (svg) svg.style.transform = viewedCb.checked ? "rotate(-90deg)" : "";
+              }
+            }
+            return;
+          }
+
+          const commentBtn = e.target.closest("[data-file-comment]");
+          if (commentBtn && !submitted) {
+            const fileName = commentBtn.dataset.fileComment;
+            const headerEl = commentBtn.closest(".diff-file-header");
+            if (headerEl) showFileComment(fileName, headerEl);
+          }
+        });
+
+        // --- Multi-line selection ---
+        let dragState = null;
+        let highlightedEls = [];
+
+        function getDiffRowsInRange(startRow, endRow) {
+          const file = startRow.closest(".diff-file");
+          if (!file) return [];
+          const allRows = Array.from(file.querySelectorAll(".diff-row"));
+          const si = allRows.indexOf(startRow);
+          const ei = allRows.indexOf(endRow);
+          if (si === -1 || ei === -1) return [];
+          return allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
+        }
+
+        function clearHighlight() {
+          for (const el of highlightedEls) el.classList.remove("side-select-range");
+          highlightedEls = [];
+        }
+
+        function highlightSide(rows, side) {
+          clearHighlight();
+          for (const r of rows) {
+            const sideEl = r.querySelector(`[data-side-type="${side}"]`);
+            if (sideEl) {
+              sideEl.classList.add("side-select-range");
+              highlightedEls.push(sideEl);
+            }
+          }
+        }
+
+        targetEl.addEventListener("mousedown", (e) => {
+          if (submitted) return;
+          const lineNum = e.target.closest(".diff-linenum");
+          if (!lineNum || lineNum.classList.contains("empty")) return;
+
+          const diffRow = lineNum.closest(".diff-row");
+          if (!diffRow) return;
+
+          const side = lineNum.dataset.side;
+          const line = parseInt(lineNum.dataset.line, 10);
+          if (isNaN(line)) return;
+
+          const file = diffRow.closest(".diff-file");
+          const allRows = file ? Array.from(file.querySelectorAll(".diff-row")) : [];
+          dragState = { startRow: diffRow, startLine: line, side, startLineNum: lineNum, allRows };
+          highlightSide([diffRow], side);
+          e.preventDefault();
+        });
+
+        targetEl.addEventListener("mousemove", (e) => {
+          if (!dragState) return;
+          const lineNum = e.target.closest(".diff-linenum");
+          if (!lineNum || lineNum.classList.contains("empty")) return;
+          if (lineNum.dataset.side !== dragState.side) return;
+          const diffRow = lineNum.closest(".diff-row");
+          if (!diffRow) return;
+          // Use cached allRows from mousedown
+          const { allRows } = dragState;
+          const si = allRows.indexOf(dragState.startRow);
+          const ei = allRows.indexOf(diffRow);
+          if (si === -1 || ei === -1) return;
+          const rows = allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
+          highlightSide(rows, dragState.side);
+        });
+
+        document.addEventListener("mouseup", (e) => {
+          if (!dragState) return;
+          const { startRow, startLine, side, startLineNum } = dragState;
+          dragState = null;
+
+          let endLine = startLine;
+          let endRow = startRow;
+          const lineNum = e.target.closest(".diff-linenum");
+          if (lineNum && !lineNum.classList.contains("empty") && lineNum.dataset.side === side) {
+            endRow = lineNum.closest(".diff-row");
+            endLine = parseInt(lineNum.dataset.line, 10) || startLine;
+          }
+
+          const fromLine = Math.min(startLine, endLine);
+          const toLine = Math.max(startLine, endLine);
+          const lastRow = endLine >= startLine ? endRow : startRow;
+          const rangeRows = getDiffRowsInRange(startRow, endRow);
+          highlightSide(rangeRows, side);
+          showCommentForm(lastRow, side, startLineNum, fromLine, toLine);
+        });
+
+        // --- Submit ---
+        function updateCommentCount() {
+          const n = annotations.size;
+          const text = `${n} comment${n !== 1 ? "s" : ""}`;
+          document.getElementById("comment-count").textContent = text;
+          document.getElementById("comment-count-bottom").textContent = text;
+        }
+
+        const generalImgHandler = setupImageSupport(
+          document.getElementById("general-comment-section"),
+        );
+
+        document.getElementById("btn-cancel").addEventListener("click", () => {
+          if (submitted) return;
+          submitted = true;
+          fetch("/api/feedback", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              annotations: [],
+              generalComment: "",
+              approved: false,
+              cancelled: true,
+            }),
+          }).catch(() => {});
+          app.innerHTML =
+            '<div class="text-center py-12 text-lg text-gh-muted">Review cancelled. You can close this tab.</div>';
+        });
+        document.getElementById("btn-approve").addEventListener("click", () => submit(true));
+        document.getElementById("btn-submit").addEventListener("click", () => submit(false));
+
+        document.addEventListener("keydown", (e) => {
+          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !submitted) {
+            if (!document.activeElement?.closest("[data-comment-key]")) submit(false);
+          }
+        });
+
+        async function submit(approved) {
+          if (submitted) return;
+          submitted = true;
+          const payload = {
+            annotations: Array.from(annotations.values()),
+            generalComment: document.getElementById("general-comment")?.value?.trim() || "",
+            generalImages: generalImgHandler.getImages(),
+            approved,
+          };
+          try {
+            await fetch("/api/feedback", {
+              method: "POST",
+              headers: { "Content-Type": "application/json" },
+              body: JSON.stringify(payload),
+            });
+          } catch {}
+          app.innerHTML = `<div class="text-center py-12 text-lg text-gh-muted">${approved ? "Changes approved." : "Feedback sent."} You can close this tab.</div>`;
+        }
+      })();
+    </script>
+  </body>
+</html>

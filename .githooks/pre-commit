@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+
+npx oxfmt --write index.html server.mjs 2>/dev/null
+npx oxlint . 2>/dev/null
+
+git add index.html server.mjs
