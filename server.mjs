@@ -2,33 +2,46 @@
 
 import { createServer } from "node:http";
 import { execSync } from "node:child_process";
-import { readFileSync, existsSync } from "node:fs";
+import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const baseRef = process.argv[2] || "main";
+const MAX_BUFFER = 10 * 1024 * 1024;
+
+function safePath(cwd, file) {
+  const filePath = resolve(cwd, file);
+  return filePath.startsWith(cwd) ? filePath : null;
+}
 
 function getDiff() {
   const cwd = process.cwd();
-  const execOpts = { cwd, encoding: "utf8", maxBuffer: 10 * 1024 * 1024 };
+  const execOpts = { cwd, encoding: "utf8", maxBuffer: MAX_BUFFER };
 
   // Find merge base between current HEAD and the base ref
   // Try the ref as-is first, then origin/<ref> for remote tracking branches
+  // Special case: "root" or "empty" diffs against the empty tree (shows everything as new)
+  const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   let mergeBase;
   let resolvedRef = baseRef;
-  try {
-    mergeBase = execSync(`git merge-base ${baseRef} HEAD`, execOpts).trim();
-  } catch {
+  if (baseRef === "root" || baseRef === "empty") {
+    mergeBase = EMPTY_TREE;
+    resolvedRef = "empty tree";
+  } else {
     try {
-      resolvedRef = `origin/${baseRef}`;
-      mergeBase = execSync(`git merge-base ${resolvedRef} HEAD`, execOpts).trim();
+      mergeBase = execSync(`git merge-base ${baseRef} HEAD`, execOpts).trim();
     } catch {
-      process.stderr.write(
-        `Warning: ref '${baseRef}' (and 'origin/${baseRef}') not found, falling back to HEAD\n`,
-      );
-      mergeBase = "HEAD";
-      resolvedRef = "HEAD";
+      try {
+        resolvedRef = `origin/${baseRef}`;
+        mergeBase = execSync(`git merge-base ${resolvedRef} HEAD`, execOpts).trim();
+      } catch {
+        process.stderr.write(
+          `Warning: ref '${baseRef}' (and 'origin/${baseRef}') not found, falling back to HEAD\n`,
+        );
+        mergeBase = "HEAD";
+        resolvedRef = "HEAD";
+      }
     }
   }
   process.stderr.write(`Diffing against ${resolvedRef} (merge-base: ${mergeBase.slice(0, 8)})\n`);
@@ -59,15 +72,15 @@ function getDiff() {
     }
   }
 
-  // Get list of changed files
-  let files = [];
-  try {
-    const raw = execSync(`git diff ${mergeBase} --name-only`, execOpts);
-    files = raw.trim().split("\n").filter(Boolean);
-  } catch {
-    // no files
-  }
-  files = files.concat(untrackedFiles);
+  // Extract changed files from patch headers (avoids redundant git call)
+  const files = [
+    ...new Set([
+      ...(patch.match(/^diff --git a\/(.*?) b\//gm) || []).map((m) =>
+        m.replace(/^diff --git a\/(.*?) b\/.*/, "$1"),
+      ),
+      ...untrackedFiles,
+    ]),
+  ];
 
   let headRef = "";
   try {
@@ -94,11 +107,15 @@ function formatFeedback(data) {
     return "## Code Review Feedback\n\nReview cancelled. No feedback provided.";
   }
 
-  if (approved) {
-    return "## Code Review Feedback\n\nChanges approved. No further action needed.";
-  }
-
   let md = "## Code Review Feedback\n";
+
+  if (approved) {
+    md += "\nChanges approved.";
+    if (!annotations?.length && !generalComment && !generalImages?.length) {
+      return md + " No further action needed.";
+    }
+    md += " Comments below still apply.\n";
+  }
 
   const byFile = new Map();
   for (const a of annotations || []) {
@@ -140,6 +157,12 @@ async function main() {
   }
 
   const htmlTemplate = readFileSync(join(__dirname, "index.html"), "utf8");
+  const jsonStr = JSON.stringify(diffData);
+  const b64 = Buffer.from(jsonStr).toString("base64");
+  const cachedHtml = htmlTemplate.replace(
+    "<!--__DIFF_DATA__-->",
+    `<script>window.__DIFF_DATA__ = JSON.parse(atob("${b64}"));</script>`,
+  );
 
   let resolveFeedback;
   const feedbackPromise = new Promise((resolve) => {
@@ -148,12 +171,8 @@ async function main() {
 
   const server = createServer((req, res) => {
     if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
-      const injected = htmlTemplate.replace(
-        "<!--__DIFF_DATA__-->",
-        `<script>window.__DIFF_DATA__ = ${JSON.stringify(diffData).replace(/<\//g, "<\\/")};</script>`,
-      );
       res.writeHead(200, { "Content-Type": "text/html; charset=utf-8" });
-      res.end(injected);
+      res.end(cachedHtml);
       return;
     }
 
@@ -167,8 +186,8 @@ async function main() {
         res.end(JSON.stringify({ error: "Invalid parameters" }));
         return;
       }
-      const filePath = resolve(diffData.cwd, file);
-      if (!filePath.startsWith(diffData.cwd) || !existsSync(filePath)) {
+      const filePath = safePath(diffData.cwd, file);
+      if (!filePath) {
         res.writeHead(404, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ error: "File not found" }));
         return;
@@ -180,8 +199,83 @@ async function main() {
         res.writeHead(200, { "Content-Type": "application/json" });
         res.end(JSON.stringify({ lines, start, end: Math.min(end, allLines.length) }));
       } catch {
-        res.writeHead(500, { "Content-Type": "application/json" });
-        res.end(JSON.stringify({ error: "Read failed" }));
+        res.writeHead(404, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "File not found" }));
+      }
+      return;
+    }
+
+    if (req.method === "GET" && req.url?.startsWith("/api/file-versions?")) {
+      const params = new URLSearchParams(req.url.split("?")[1]);
+      const file = params.get("file");
+      if (!file) {
+        res.writeHead(400, { "Content-Type": "application/json" });
+        res.end(JSON.stringify({ error: "Missing file parameter" }));
+        return;
+      }
+      let oldContent = "";
+      try {
+        oldContent = execSync(`git show ${diffData.mergeBase}:"${file}"`, {
+          cwd: diffData.cwd,
+          encoding: "utf8",
+          maxBuffer: MAX_BUFFER,
+        });
+      } catch {}
+      let newContent = "";
+      const filePath = safePath(diffData.cwd, file);
+      if (filePath) {
+        try {
+          newContent = readFileSync(filePath, "utf8");
+        } catch {}
+      }
+      res.writeHead(200, { "Content-Type": "application/json" });
+      res.end(JSON.stringify({ old: oldContent, new: newContent }));
+      return;
+    }
+
+    if (req.method === "GET" && req.url?.startsWith("/api/raw-file?")) {
+      const params = new URLSearchParams(req.url.split("?")[1]);
+      const file = params.get("file");
+      const ref = params.get("ref"); // "old" for base version, default is working tree
+      if (!file) {
+        res.writeHead(400);
+        res.end("Missing file parameter");
+        return;
+      }
+      try {
+        let buf;
+        if (ref === "old") {
+          buf = execSync(`git show ${diffData.mergeBase}:"${file}"`, {
+            cwd: diffData.cwd,
+            encoding: "buffer",
+            maxBuffer: MAX_BUFFER,
+          });
+        } else {
+          const filePath = safePath(diffData.cwd, file);
+          if (!filePath) {
+            res.writeHead(404);
+            res.end("Not found");
+            return;
+          }
+          buf = readFileSync(filePath);
+        }
+        const ext = file.split(".").pop()?.toLowerCase();
+        const mimeMap = {
+          jpg: "image/jpeg",
+          jpeg: "image/jpeg",
+          png: "image/png",
+          gif: "image/gif",
+          svg: "image/svg+xml",
+          webp: "image/webp",
+          ico: "image/x-icon",
+          bmp: "image/bmp",
+        };
+        const mime = mimeMap[ext] || "application/octet-stream";
+        res.writeHead(200, { "Content-Type": mime, "Cache-Control": "no-cache" });
+        res.end(buf);
+      } catch {
+        res.writeHead(404);
+        res.end("Not found");
       }
       return;
     }
