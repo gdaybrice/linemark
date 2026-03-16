@@ -192,9 +192,21 @@ function formatFeedback(data, diffData) {
   for (const [file, anns] of byFile) {
     md += `\n### File: ${file}\n`;
     const fileComments = anns.filter((a) => a.type === "file");
-    const lineComments = anns.filter((a) => a.type !== "file");
+    const richComments = anns.filter((a) => a.type === "rich");
+    const lineComments = anns.filter((a) => a.type !== "file" && a.type !== "rich");
     for (const a of fileComments) {
       md += `**File comment**: ${a.text}\n${imgLines(a.images)}`;
+    }
+    for (const a of richComments.sort((x, y) => (x.blockIndex || 0) - (y.blockIndex || 0))) {
+      const snippetPreview = a.snippet ? a.snippet.slice(0, 80).replace(/\n/g, " ") : "";
+      const ref = snippetPreview
+        ? ` "${snippetPreview}${a.snippet.length > 80 ? "…" : ""}"`
+        : ` block ${(a.blockIndex || 0) + 1}`;
+      md += `**Re${ref}**: ${a.text}\n`;
+      if (a.snippet) {
+        md += `> ${a.snippet.split("\n").join("\n> ")}\n`;
+      }
+      md += imgLines(a.images);
     }
     for (const a of lineComments.sort((x, y) => (x.fromLine || x.line) - (y.fromLine || y.line))) {
       const sideLabel = a.side === "left" ? ` (base: ${baseLabel})` : " (working tree)";

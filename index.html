@@ -384,6 +384,45 @@
       .rich-diff-content img {
         max-width: 100%;
       }
+      /* Annotatable rich blocks */
+      .rich-block {
+        position: relative;
+        cursor: default;
+        border-left: 2px solid transparent;
+        margin-left: -16px;
+        padding-left: 14px;
+        transition:
+          border-color 0.15s,
+          background 0.15s;
+      }
+      .rich-block::before {
+        content: "+";
+        position: absolute;
+        left: -26px;
+        top: 4px;
+        width: 18px;
+        height: 18px;
+        background: var(--color-blue);
+        color: #ffffff;
+        border-radius: 2px;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        font-size: 13px;
+        font-weight: 500;
+        line-height: 1;
+        cursor: pointer;
+        z-index: 5;
+      }
+      .rich-block:hover::before {
+        display: flex;
+      }
+      .rich-block:hover {
+        background: var(--color-range-overlay);
+      }
+      .rich-block.has-comment {
+        border-left-color: var(--color-blue);
+      }
       .rich-diff-added {
         background: rgba(63, 185, 80, 0.05);
         border-left: 2px solid rgba(63, 185, 80, 0.3);
@@ -1207,7 +1246,9 @@
             const lbl =
               a.type === "file"
                 ? `${esc(a.file)} (file comment)`
-                : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}${a.side === "left" ? ` (${currentDiffData.resolvedRef})` : ""}`;
+                : a.type === "rich"
+                  ? `${esc(a.file)} — ${esc((a.snippet || "").slice(0, 60))}${(a.snippet || "").length > 60 ? "…" : ""}`
+                  : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}${a.side === "left" ? ` (${currentDiffData.resolvedRef})` : ""}`;
             const imgHtml = (a.images || [])
               .map(
                 (src) =>
@@ -1251,12 +1292,12 @@
 
           // Unified comment row creation for both line-level and file-level comments
           function createCommentRow(opts) {
-            const { key, label, side, annotation, anchorEl, onSave, onDelete, onEdit } = opts;
+            const { key, label, side, anchorEl, onSave, onDelete, onEdit, savedOnly } = opts;
             const useLayout = side !== "file";
 
             const existing = document.querySelector(`[data-comment-key="${CSS.escape(key)}"]`);
             if (existing) {
-              existing.querySelector("textarea")?.focus();
+              if (!savedOnly) existing.querySelector("textarea")?.focus();
               return;
             }
 
@@ -1267,32 +1308,38 @@
             commentRow.setAttribute("data-comment-key", key);
 
             const existingAnn = annotations.get(key);
-            const formHtml = buildCommentFormHTML(
-              label,
-              existingAnn?.text || "",
-              annotations.has(key),
-            );
-            commentRow.innerHTML = useLayout ? wrapForLayout(formHtml, side) : formHtml;
-
-            anchorEl.after(commentRow);
-            const imgHandler = setupImageSupport(commentRow);
-            commentRow.querySelector("textarea")?.focus();
-
-            if (existingAnn?.images) {
-              for (const src of existingAnn.images) imgHandler.addImage(src);
-            }
+            let imgHandler = null;
 
             function renderSaved() {
               const savedHtml = buildSavedHTML(annotations.get(key));
               commentRow.innerHTML = useLayout ? wrapForLayout(savedHtml, side) : savedHtml;
             }
 
+            if (savedOnly && existingAnn) {
+              renderSaved();
+            } else {
+              const formHtml = buildCommentFormHTML(
+                label,
+                existingAnn?.text || "",
+                annotations.has(key),
+              );
+              commentRow.innerHTML = useLayout ? wrapForLayout(formHtml, side) : formHtml;
+              imgHandler = setupImageSupport(commentRow);
+              commentRow.querySelector("textarea")?.focus();
+              if (existingAnn?.images) {
+                for (const src of existingAnn.images) imgHandler.addImage(src);
+              }
+              setupCommentKeydown(commentRow);
+            }
+
+            anchorEl.after(commentRow);
+
             commentRow.addEventListener("click", (ev) => {
               const action = ev.target.dataset?.action;
               if (!action) return;
               if (action === "save") {
                 const text = commentRow.querySelector("textarea").value.trim();
-                const images = imgHandler.getImages();
+                const images = imgHandler ? imgHandler.getImages() : [];
                 if (text || images.length) {
                   onSave(text, images);
                   renderSaved();
@@ -1319,8 +1366,6 @@
                 onEdit();
               }
             });
-
-            setupCommentKeydown(commentRow);
           }
 
           // --- Line-level comments ---
@@ -1411,6 +1456,104 @@
                 });
               },
               onEdit: () => showFileComment(fileName, headerEl),
+            });
+          }
+
+          // --- Rich markdown block annotations ---
+          const RICH_BLOCK_TAGS = new Set([
+            "H1",
+            "H2",
+            "H3",
+            "H4",
+            "H5",
+            "H6",
+            "P",
+            "LI",
+            "BLOCKQUOTE",
+            "PRE",
+            "TABLE",
+            "HR",
+          ]);
+          function instrumentRichBlocks(richEl, fileName) {
+            if (!richEl || submitted) return;
+            const blocks = [];
+            for (const child of richEl.children) {
+              if (RICH_BLOCK_TAGS.has(child.tagName)) {
+                blocks.push(child);
+              } else if (child.tagName === "UL" || child.tagName === "OL") {
+                // Add each LI individually
+                for (const li of child.children) {
+                  if (li.tagName === "LI") blocks.push(li);
+                }
+              }
+            }
+            function openRichComment(blk, bIdx, fName) {
+              const snippet = blk.textContent.trim().slice(0, 200);
+              const headingText = blk.tagName.match(/^H[1-6]$/) ? blk.textContent.trim() : "";
+              const blockKey = `${fName}:block-${bIdx}:rich`;
+              const blockLabel = headingText
+                ? `${esc(fName)} — ${esc(headingText)}`
+                : `${esc(fName)} block ${bIdx + 1}`;
+
+              createCommentRow({
+                key: blockKey,
+                label: blockLabel,
+                side: "file",
+                anchorEl: blk,
+                onSave: (text, images) => {
+                  annotations.set(blockKey, {
+                    file: fName,
+                    fromLine: 0,
+                    toLine: 0,
+                    side: "rich",
+                    type: "rich",
+                    blockIndex: bIdx,
+                    text,
+                    images,
+                    snippet,
+                  });
+                  blk.classList.add("has-comment");
+                },
+                onDelete: () => {
+                  blk.classList.remove("has-comment");
+                },
+                onEdit: () => {
+                  openRichComment(blk, bIdx, fName);
+                },
+              });
+            }
+
+            blocks.forEach((block, idx) => {
+              block.classList.add("rich-block");
+              block.dataset.richBlock = idx;
+              block.dataset.richFile = fileName;
+
+              const key = `${fileName}:block-${idx}:rich`;
+              if (annotations.has(key)) {
+                block.classList.add("has-comment");
+                createCommentRow({
+                  key,
+                  label: block.tagName.match(/^H[1-6]$/)
+                    ? `${esc(fileName)} — ${esc(block.textContent.trim())}`
+                    : `${esc(fileName)} block ${idx + 1}`,
+                  side: "file",
+                  anchorEl: block,
+                  savedOnly: true,
+                  onSave: () => {},
+                  onDelete: () => {
+                    block.classList.remove("has-comment");
+                  },
+                  onEdit: () => {
+                    openRichComment(block, idx, fileName);
+                  },
+                });
+              }
+
+              block.addEventListener("click", (e) => {
+                if (submitted) return;
+                if (e.target.closest("a")) return;
+                openRichComment(block, idx, fileName);
+              });
             });
           }
 
@@ -1552,10 +1695,11 @@
                     } else {
                       inner.innerHTML = `<div class="rich-diff-content">${html}</div>`;
                     }
+                    instrumentRichBlocks(inner.querySelector(".rich-diff-content"), fileName);
                   })
-                  .catch(() => {
+                  .catch((err) => {
                     inner.innerHTML =
-                      '<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.</p></div>';
+                      `<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.${err?.message ? " " + err.message : ""}</p></div>`;
                   });
               }
               return;
