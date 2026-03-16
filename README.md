@@ -4,7 +4,7 @@
 
 <h1 align="center">linemark</h1>
 
-<p align="center">Code review for AI agent changes. In the browser. Before they go in.</p>
+<p align="center">Review AI agent changes locally before they go in.</p>
 
 <p align="center">
   <img src="screenshot.jpg" width="720" alt="linemark diff review UI">
@@ -51,14 +51,16 @@ Claude reads your comments and addresses each one. You can run `/linemark` again
 ## What you get
 
 - Side-by-side and unified diff views
+- Commit selector: working tree, individual commits, or all commits
 - Inline comments on lines, ranges, or whole files
 - Image attachments (paste, drag, or pick)
 - File tree with search
 - Collapsible files with "Viewed" tracking
 - Syntax highlighting
+- Light and dark themes
 
 ## How it works
 
-`/linemark` starts a local server that diffs your working tree against the base branch. It injects the diff data into a single-page review UI and opens it in your browser. When you submit, your comments come back as structured feedback on stdout. Claude Code reads them and acts on each one.
+`/linemark` starts a local server and opens a review UI in your browser. It defaults to showing working tree changes, and you can switch between individual commits or all commits from the dropdown. When you submit, your comments come back as structured feedback on stdout. Claude Code reads them and acts on each one.
 
 One file for the server. One file for the UI. No build step. No dependencies beyond Node.

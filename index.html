@@ -401,8 +401,10 @@
 
     <script>
       (function () {
-        const diffData = window.__DIFF_DATA__;
+        const bootstrap = window.__BOOTSTRAP__;
         const app = document.getElementById("app");
+        let currentDiffData = null;
+        let commits = [];
 
         function esc(s) {
           return s
@@ -412,7 +414,7 @@
             .replace(/"/g, "&quot;");
         }
 
-        if (!diffData || !diffData.patch) {
+        if (!bootstrap) {
           app.innerHTML = `<div class="flex items-center justify-center min-h-screen">
               <div class="text-center">
                 <div class="w-8 h-8 border border-gh-border mx-auto mb-4 flex items-center justify-center">
@@ -424,7 +426,7 @@
           return;
         }
 
-        const annotations = new Map();
+        let annotations = new Map();
         let submitted = false;
         let viewMode = "split";
 
@@ -484,21 +486,15 @@
           if (el) el.textContent = `${viewedFiles.size} / ${fileStats.size} viewed`;
         }
 
-        const Diff2Html = window.Diff2Html;
-        const parsedFiles = Diff2Html ? Diff2Html.parse(diffData.patch) : [];
+        function commitLabel(v) {
+          return v === "working" ? "Working tree" : v === "all" ? "All commits" : v.slice(0, 7);
+        }
 
-        const fileStats = new Map(
-          parsedFiles.map((f) => {
-            const name = f.newName || f.oldName;
-            return [name, { name, adds: f.addedLines, dels: f.deletedLines }];
-          }),
-        );
+        const Diff2Html = window.Diff2Html;
+        let parsedFiles = [];
+        let fileStats = new Map();
         let totalAdds = 0,
           totalDels = 0;
-        for (const s of fileStats.values()) {
-          totalAdds += s.adds;
-          totalDels += s.dels;
-        }
 
         function buildFileTree(files) {
           const dirs = new Map();
@@ -903,11 +899,49 @@
           return viewMode === "split" ? renderSplitDiff() : renderUnifiedDiff();
         }
 
-        const displayRef = diffData.resolvedRef || diffData.baseRef;
-        const currentBranch = diffData.branchName || diffData.headRef || "HEAD";
-        document.title = `${displayRef}...${currentBranch} · linemark`;
+        let docListenerController = null;
+        function renderDiffView(diffData) {
+          if (docListenerController) docListenerController.abort();
+          docListenerController = new AbortController();
+          const docSignal = { signal: docListenerController.signal };
+          currentDiffData = diffData;
+          annotations = new Map();
+          viewedFiles.clear();
 
-        app.innerHTML = `
+          parsedFiles = Diff2Html ? Diff2Html.parse(diffData.patch || "") : [];
+          fileStats = new Map(
+            parsedFiles.map((f) => {
+              const name = f.newName || f.oldName;
+              return [name, { name, adds: f.addedLines, dels: f.deletedLines }];
+            }),
+          );
+          totalAdds = 0;
+          totalDels = 0;
+          for (const s of fileStats.values()) {
+            totalAdds += s.adds;
+            totalDels += s.dels;
+          }
+
+          const commitOptions = commits
+            .map(
+              (c) =>
+                `<option value="${esc(c.hash)}">${esc(c.shortHash)} ${esc(c.subject)}</option>`,
+            )
+            .join("");
+          const hasWt = diffData.hasWorktreeChanges;
+          const commitSelector = `<div class="relative inline-block">
+                <select id="commit-selector" class="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10">
+                  ${hasWt ? '<option value="working">Working tree</option>' : ""}
+                  ${commitOptions}
+                  <option value="all">All commits</option>
+                </select>
+                <span id="commit-selector-display" class="inline-flex items-center gap-1.5 font-mono text-[12px] text-gh-text bg-gh-badgeBg border border-gh-border px-2 py-1 cursor-pointer select-none whitespace-nowrap">
+                  <span id="commit-selector-label">${commitLabel(hasWt ? "working" : "all")}</span>
+                  <svg class="w-3 h-3 text-gh-muted" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l3 3 3-3"/></svg>
+                </span>
+              </div>`;
+
+          app.innerHTML = `
     <div class="flex min-h-screen">
       <div class="w-[260px] min-w-[260px] bg-gh-surface border-r border-gh-border sticky top-0 h-screen flex flex-col">
         <div class="px-3 flex items-center border-b border-gh-border" style="height:47.5px">
@@ -923,10 +957,8 @@
       <div class="flex-1 min-w-0 flex flex-col">
         <div class="sticky top-0 z-[100] bg-gh-surface border-b border-gh-border px-4 py-2.5 flex items-center justify-between">
           <div class="flex items-center gap-2">
-            <span class="font-mono text-[12px] text-gh-text bg-gh-badgeBg px-2 py-0.5">${esc(currentBranch)}</span>
-            <span class="text-[10px] uppercase tracking-[0.1em] text-gh-muted">vs</span>
-            <span class="font-mono text-[12px] text-gh-muted bg-gh-badgeBg px-2 py-0.5">${esc(displayRef)}</span>
-            <span class="font-mono text-[11px] text-gh-muted ml-2">
+            ${commitSelector}
+            <span class="font-mono text-[11px] text-gh-muted ml-1">
               <span class="text-gh-addFg">+${totalAdds}</span>
               <span class="text-gh-delFg ml-1">-${totalDels}</span>
             </span>
@@ -967,155 +999,194 @@
     </div>
   `;
 
-        const targetEl = document.getElementById("diff-target");
+          const targetEl = document.getElementById("diff-target");
 
-        // --- View mode toggle ---
-        document.getElementById("view-toggle").addEventListener("click", (e) => {
-          const btn = e.target.closest("button[data-view]");
-          if (!btn || btn.dataset.view === viewMode) return;
-          viewMode = btn.dataset.view;
-          document.querySelectorAll("#view-toggle button").forEach((b) => {
-            if (b.dataset.view === viewMode) {
-              b.className = "px-2.5 py-1 text-[11px] font-medium bg-gh-activeBg text-gh-text";
-            } else {
-              b.className = "px-2.5 py-1 text-[11px] font-medium text-gh-muted hover:text-gh-text";
-            }
+          // --- View mode toggle ---
+          document.getElementById("view-toggle").addEventListener("click", (e) => {
+            const btn = e.target.closest("button[data-view]");
+            if (!btn || btn.dataset.view === viewMode) return;
+            viewMode = btn.dataset.view;
+            document.querySelectorAll("#view-toggle button").forEach((b) => {
+              if (b.dataset.view === viewMode) {
+                b.className = "px-2.5 py-1 text-[11px] font-medium bg-gh-activeBg text-gh-text";
+              } else {
+                b.className =
+                  "px-2.5 py-1 text-[11px] font-medium text-gh-muted hover:text-gh-text";
+              }
+            });
+            targetEl.innerHTML = renderDiff();
           });
-          targetEl.innerHTML = renderDiff();
-        });
 
-        // --- Theme toggle ---
-        const themeToggle = document.getElementById("theme-toggle");
-        const htmlEl = document.documentElement;
-        function setTheme(mode) {
-          htmlEl.className = mode;
-          localStorage.setItem("linemark-theme", mode);
-          const hljsLink = document.querySelector('link[href*="highlight"]');
-          if (hljsLink) {
-            hljsLink.href =
-              mode === "light"
-                ? "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css"
-                : "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css";
+          // --- Commit selector ---
+          const commitSelect = document.getElementById("commit-selector");
+          function updateCommitLabel(selectEl) {
+            const label = document.getElementById("commit-selector-label");
+            if (!label || !selectEl) return;
+            const text = commitLabel(selectEl.value);
+            label.textContent = text;
+            document.title = `${text} · linemark`;
           }
-          themeToggle
-            .querySelector(".theme-icon-dark")
-            .classList.toggle("hidden", mode === "light");
-          themeToggle
-            .querySelector(".theme-icon-light")
-            .classList.toggle("hidden", mode === "dark");
-        }
-        const savedTheme =
-          localStorage.getItem("linemark-theme") ||
-          (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
-        setTheme(savedTheme);
-        themeToggle.addEventListener("click", () =>
-          setTheme(htmlEl.className === "dark" ? "light" : "dark"),
-        );
+          if (commitSelect) {
+            updateCommitLabel(commitSelect);
+            commitSelect.addEventListener("change", async () => {
+              const val = commitSelect.value;
+              updateCommitLabel(commitSelect);
+              commitSelect.disabled = true;
+              targetEl.innerHTML = `<div class="flex items-center justify-center py-20"><div class="text-[13px] text-gh-muted">Loading diff...</div></div>`;
+              try {
+                const res = await fetch(`/api/diff?commit=${encodeURIComponent(val)}`);
+                const data = await res.json();
+                commitSelect.disabled = false;
+                renderDiffView(data);
+                // Restore the commit selector value after re-render
+                const newSelect = document.getElementById("commit-selector");
+                if (newSelect) {
+                  newSelect.value = val;
+                  updateCommitLabel(newSelect);
+                }
+              } catch {
+                commitSelect.disabled = false;
+                targetEl.innerHTML = `<div class="flex items-center justify-center py-20"><div class="text-[13px] text-gh-delFg">Failed to load diff</div></div>`;
+              }
+            });
+          }
 
-        // --- File filter ---
-        document.getElementById("file-filter")?.addEventListener("input", (e) => {
-          const q = e.target.value.toLowerCase();
-          document.querySelectorAll("#file-tree a").forEach((a) => {
-            a.style.display = a.title.toLowerCase().includes(q) ? "" : "none";
+          // --- Theme toggle ---
+          const themeToggle = document.getElementById("theme-toggle");
+          const htmlEl = document.documentElement;
+          function setTheme(mode) {
+            htmlEl.className = mode;
+            localStorage.setItem("linemark-theme", mode);
+            const hljsLink = document.querySelector('link[href*="highlight"]');
+            if (hljsLink) {
+              hljsLink.href =
+                mode === "light"
+                  ? "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css"
+                  : "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css";
+            }
+            themeToggle
+              .querySelector(".theme-icon-dark")
+              .classList.toggle("hidden", mode === "light");
+            themeToggle
+              .querySelector(".theme-icon-light")
+              .classList.toggle("hidden", mode === "dark");
+          }
+          const savedTheme =
+            localStorage.getItem("linemark-theme") ||
+            (window.matchMedia("(prefers-color-scheme: light)").matches ? "light" : "dark");
+          setTheme(savedTheme);
+          themeToggle.addEventListener("click", () =>
+            setTheme(htmlEl.className === "dark" ? "light" : "dark"),
+          );
+
+          // --- File filter ---
+          document.getElementById("file-filter")?.addEventListener("input", (e) => {
+            const q = e.target.value.toLowerCase();
+            document.querySelectorAll("#file-tree a").forEach((a) => {
+              a.style.display = a.title.toLowerCase().includes(q) ? "" : "none";
+            });
           });
-        });
 
-        // --- Auto-resize textareas ---
-        function autoResize(ta) {
-          ta.style.height = "auto";
-          ta.style.height = ta.scrollHeight + "px";
-        }
-        document.addEventListener("input", (e) => {
-          if (e.target.tagName === "TEXTAREA") autoResize(e.target);
-        });
+          // --- Auto-resize textareas ---
+          function autoResize(ta) {
+            ta.style.height = "auto";
+            ta.style.height = ta.scrollHeight + "px";
+          }
+          document.addEventListener(
+            "input",
+            (e) => {
+              if (e.target.tagName === "TEXTAREA") autoResize(e.target);
+            },
+            docSignal,
+          );
 
-        // --- Image support: paste, drag-and-drop, file picker ---
-        function setupImageSupport(container) {
-          const textarea = container.querySelector("textarea");
-          const previewArea = container.querySelector(".image-preview-area");
-          const attachBtn = container.querySelector('[data-action="attach"]');
-          const images = [];
+          // --- Image support: paste, drag-and-drop, file picker ---
+          function setupImageSupport(container) {
+            const textarea = container.querySelector("textarea");
+            const previewArea = container.querySelector(".image-preview-area");
+            const attachBtn = container.querySelector('[data-action="attach"]');
+            const images = [];
 
-          function addImage(dataUrl) {
-            images.push(dataUrl);
-            const idx = images.length - 1;
-            const imgEl = document.createElement("div");
-            imgEl.className = "group/img relative inline-block mr-2 mb-2";
-            imgEl.innerHTML = `
+            function addImage(dataUrl) {
+              images.push(dataUrl);
+              const idx = images.length - 1;
+              const imgEl = document.createElement("div");
+              imgEl.className = "group/img relative inline-block mr-2 mb-2";
+              imgEl.innerHTML = `
         <img src="${dataUrl}" class="max-h-[100px] border border-gh-border object-cover" />
         <button class="absolute top-1.5 right-1.5 w-5 h-5 bg-gh-surface90 text-gh-muted border border-gh-border flex items-center justify-center hover:bg-red-600 hover:text-white hover:border-red-600 opacity-0 group-hover/img:opacity-100 transition-all cursor-pointer" data-remove-img="${idx}">
           <svg class="w-3 h-3" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
         </button>
       `;
-            previewArea.appendChild(imgEl);
-          }
-
-          function readFile(file) {
-            if (!file.type.startsWith("image/")) return;
-            const reader = new FileReader();
-            reader.onload = () => addImage(reader.result);
-            reader.readAsDataURL(file);
-          }
-
-          textarea.addEventListener("paste", (e) => {
-            const items = e.clipboardData?.items;
-            if (!items) return;
-            for (const item of items) {
-              if (item.type.startsWith("image/")) {
-                e.preventDefault();
-                readFile(item.getAsFile());
-                return;
-              }
+              previewArea.appendChild(imgEl);
             }
-          });
 
-          textarea.addEventListener("dragover", (e) => {
-            e.preventDefault();
-            textarea.classList.add("border-gh-text");
-          });
-          textarea.addEventListener("dragleave", () => {
-            textarea.classList.remove("border-gh-text");
-          });
-          textarea.addEventListener("drop", (e) => {
-            e.preventDefault();
-            textarea.classList.remove("border-gh-text");
-            for (const file of e.dataTransfer.files) readFile(file);
-          });
+            function readFile(file) {
+              if (!file.type.startsWith("image/")) return;
+              const reader = new FileReader();
+              reader.onload = () => addImage(reader.result);
+              reader.readAsDataURL(file);
+            }
 
-          if (attachBtn) {
-            const fileInput = document.createElement("input");
-            fileInput.type = "file";
-            fileInput.accept = "image/*";
-            fileInput.multiple = true;
-            fileInput.style.display = "none";
-            container.appendChild(fileInput);
-            attachBtn.addEventListener("click", (e) => {
-              e.stopPropagation();
-              fileInput.click();
+            textarea.addEventListener("paste", (e) => {
+              const items = e.clipboardData?.items;
+              if (!items) return;
+              for (const item of items) {
+                if (item.type.startsWith("image/")) {
+                  e.preventDefault();
+                  readFile(item.getAsFile());
+                  return;
+                }
+              }
             });
-            fileInput.addEventListener("change", () => {
-              for (const file of fileInput.files) readFile(file);
-              fileInput.value = "";
+
+            textarea.addEventListener("dragover", (e) => {
+              e.preventDefault();
+              textarea.classList.add("border-gh-text");
             });
+            textarea.addEventListener("dragleave", () => {
+              textarea.classList.remove("border-gh-text");
+            });
+            textarea.addEventListener("drop", (e) => {
+              e.preventDefault();
+              textarea.classList.remove("border-gh-text");
+              for (const file of e.dataTransfer.files) readFile(file);
+            });
+
+            if (attachBtn) {
+              const fileInput = document.createElement("input");
+              fileInput.type = "file";
+              fileInput.accept = "image/*";
+              fileInput.multiple = true;
+              fileInput.style.display = "none";
+              container.appendChild(fileInput);
+              attachBtn.addEventListener("click", (e) => {
+                e.stopPropagation();
+                fileInput.click();
+              });
+              fileInput.addEventListener("change", () => {
+                for (const file of fileInput.files) readFile(file);
+                fileInput.value = "";
+              });
+            }
+
+            previewArea.addEventListener("click", (e) => {
+              const btn = e.target.closest("[data-remove-img]");
+              if (!btn) return;
+              const idx = parseInt(btn.dataset.removeImg, 10);
+              images[idx] = null;
+              btn.closest(".relative").remove();
+            });
+
+            return { addImage, getImages: () => images.filter(Boolean) };
           }
 
-          previewArea.addEventListener("click", (e) => {
-            const btn = e.target.closest("[data-remove-img]");
-            if (!btn) return;
-            const idx = parseInt(btn.dataset.removeImg, 10);
-            images[idx] = null;
-            btn.closest(".relative").remove();
-          });
+          // --- Comment system ---
+          const ATTACH_ICON =
+            '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
 
-          return { addImage, getImages: () => images.filter(Boolean) };
-        }
-
-        // --- Comment system ---
-        const ATTACH_ICON =
-          '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="m21.44 11.05-9.19 9.19a6 6 0 0 1-8.49-8.49l8.57-8.57A4 4 0 1 1 18 8.84l-8.59 8.57a2 2 0 0 1-2.83-2.83l8.49-8.48"/></svg>';
-
-        function buildCommentFormHTML(label, existingText, hasExisting) {
-          return `
+          function buildCommentFormHTML(label, existingText, hasExisting) {
+            return `
       <div class="bg-gh-commentBg p-3">
         <div class="text-xs text-gh-muted mb-2 font-mono">${label}</div>
         <textarea class="w-full bg-transparent text-gh-text border border-gh-borderSubtle px-3 py-2 text-[13px] font-mono focus:outline-none focus:border-gh-border placeholder:text-gh-mutedHalf transition-colors" placeholder="Leave a comment..." rows="3">${esc(existingText)}</textarea>
@@ -1130,20 +1201,20 @@
           <button class="bg-gh-green text-white text-[11px] px-3 py-1.5 font-medium hover:bg-gh-greenHover transition-colors" data-action="save">Add comment</button>
         </div>
       </div>`;
-        }
+          }
 
-        function buildSavedHTML(a) {
-          const lbl =
-            a.type === "file"
-              ? `${esc(a.file)} (file comment)`
-              : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}${a.side === "left" ? ` (${diffData.resolvedRef})` : ""}`;
-          const imgHtml = (a.images || [])
-            .map(
-              (src) =>
-                `<img src="${src}" class="max-h-[100px] border border-gh-border mr-2 mt-1 object-cover" />`,
-            )
-            .join("");
-          return `
+          function buildSavedHTML(a) {
+            const lbl =
+              a.type === "file"
+                ? `${esc(a.file)} (file comment)`
+                : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}${a.side === "left" ? ` (${currentDiffData.resolvedRef})` : ""}`;
+            const imgHtml = (a.images || [])
+              .map(
+                (src) =>
+                  `<img src="${src}" class="max-h-[100px] border border-gh-border mr-2 mt-1 object-cover" />`,
+              )
+              .join("");
+            return `
       <div class="bg-gh-commentBg p-3">
         <div class="flex items-center justify-between mb-1">
           <span class="text-xs text-gh-muted font-mono">${lbl}</span>
@@ -1152,508 +1223,557 @@
         <div class="text-[13px] text-gh-text whitespace-pre-wrap leading-relaxed">${esc(a.text)}</div>
         ${imgHtml ? `<div class="flex flex-wrap mt-2">${imgHtml}</div>` : ""}
       </div>`;
-        }
-
-        function wrapForLayout(innerHtml, side) {
-          const isUnified = viewMode === "unified";
-          const emptyHalf = '<div class="flex-1 min-w-0 bg-gh-surfaceHalf"></div>';
-          if (isUnified || side === "file") {
-            return `<div class="flex-1 min-w-0">${innerHtml}</div>`;
-          } else if (side === "left") {
-            return `<div class="flex-1 min-w-0 border-r border-gh-border">${innerHtml}</div>${emptyHalf}`;
-          } else {
-            return `${emptyHalf}<div class="flex-1 min-w-0">${innerHtml}</div>`;
-          }
-        }
-
-        function setupCommentKeydown(commentRow) {
-          commentRow.querySelector("textarea")?.addEventListener("keydown", (ev) => {
-            if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
-              ev.preventDefault();
-              commentRow.querySelector('[data-action="save"]')?.click();
-            }
-            if (ev.key === "Escape") {
-              commentRow.querySelector('[data-action="cancel"]')?.click();
-            }
-          });
-        }
-
-        // Unified comment row creation for both line-level and file-level comments
-        function createCommentRow(opts) {
-          const { key, label, side, annotation, anchorEl, onSave, onDelete, onEdit } = opts;
-          const useLayout = side !== "file";
-
-          const existing = document.querySelector(`[data-comment-key="${CSS.escape(key)}"]`);
-          if (existing) {
-            existing.querySelector("textarea")?.focus();
-            return;
           }
 
-          const commentRow = document.createElement("div");
-          commentRow.className = useLayout
-            ? "flex border-b border-gh-borderSubtle"
-            : "border-b border-gh-borderSubtle";
-          commentRow.setAttribute("data-comment-key", key);
-
-          const existingAnn = annotations.get(key);
-          const formHtml = buildCommentFormHTML(
-            label,
-            existingAnn?.text || "",
-            annotations.has(key),
-          );
-          commentRow.innerHTML = useLayout ? wrapForLayout(formHtml, side) : formHtml;
-
-          anchorEl.after(commentRow);
-          const imgHandler = setupImageSupport(commentRow);
-          commentRow.querySelector("textarea")?.focus();
-
-          if (existingAnn?.images) {
-            for (const src of existingAnn.images) imgHandler.addImage(src);
-          }
-
-          function renderSaved() {
-            const savedHtml = buildSavedHTML(annotations.get(key));
-            commentRow.innerHTML = useLayout ? wrapForLayout(savedHtml, side) : savedHtml;
-          }
-
-          commentRow.addEventListener("click", (ev) => {
-            const action = ev.target.dataset?.action;
-            if (!action) return;
-            if (action === "save") {
-              const text = commentRow.querySelector("textarea").value.trim();
-              const images = imgHandler.getImages();
-              if (text || images.length) {
-                onSave(text, images);
-                renderSaved();
-              } else {
-                commentRow.remove();
-              }
-              clearHighlight();
-              updateCommentCount();
-            } else if (action === "delete") {
-              if (onDelete) onDelete();
-              annotations.delete(key);
-              commentRow.remove();
-              clearHighlight();
-              updateCommentCount();
-            } else if (action === "cancel") {
-              if (annotations.has(key)) {
-                renderSaved();
-              } else {
-                commentRow.remove();
-              }
-              clearHighlight();
-            } else if (action === "edit") {
-              commentRow.remove();
-              onEdit();
-            }
-          });
-
-          setupCommentKeydown(commentRow);
-        }
-
-        // --- Line-level comments ---
-        function extractSnippet(diffRow, side, fromLine, toLine) {
-          const file = diffRow.closest(".diff-file");
-          if (!file) return "";
-          const sideAttr = side === "left" ? "left" : "right";
-          const rows = file.querySelectorAll(".diff-row");
-          const lines = [];
-          for (const row of rows) {
-            const lineNumEl = row.querySelector(`.diff-linenum[data-side="${sideAttr}"]`);
-            if (!lineNumEl || lineNumEl.classList.contains("empty")) continue;
-            const num = parseInt(lineNumEl.dataset.line, 10);
-            if (isNaN(num) || num < fromLine || num > toLine) continue;
-            // In split view, code is 2nd child of the side container
-            const sideEl = row.querySelector(`[data-side-type="${sideAttr}"]`);
-            let text = "";
-            if (sideEl) {
-              const codeEl = sideEl.children[1];
-              text = codeEl ? codeEl.textContent : "";
+          function wrapForLayout(innerHtml, side) {
+            const isUnified = viewMode === "unified";
+            const emptyHalf = '<div class="flex-1 min-w-0 bg-gh-surfaceHalf"></div>';
+            if (isUnified || side === "file") {
+              return `<div class="flex-1 min-w-0">${innerHtml}</div>`;
+            } else if (side === "left") {
+              return `<div class="flex-1 min-w-0 border-r border-gh-border">${innerHtml}</div>${emptyHalf}`;
             } else {
-              // Unified view: last child of the row is the code cell
-              const children = row.children;
-              text = children.length ? children[children.length - 1].textContent : "";
+              return `${emptyHalf}<div class="flex-1 min-w-0">${innerHtml}</div>`;
             }
-            lines.push(text);
           }
-          return lines.join("\n");
-        }
 
-        function showCommentForm(diffRow, side, lineNumEl, fromLine, toLine) {
-          const fileName = diffRow.dataset.file;
-          if (fromLine == null) {
-            fromLine = parseInt(lineNumEl.dataset.line, 10) || 0;
-            toLine = fromLine;
+          function setupCommentKeydown(commentRow) {
+            commentRow.querySelector("textarea")?.addEventListener("keydown", (ev) => {
+              if (ev.key === "Enter" && (ev.metaKey || ev.ctrlKey)) {
+                ev.preventDefault();
+                commentRow.querySelector('[data-action="save"]')?.click();
+              }
+              if (ev.key === "Escape") {
+                commentRow.querySelector('[data-action="cancel"]')?.click();
+              }
+            });
           }
-          const lineLabel = fromLine === toLine ? `${fromLine}` : `${fromLine}-${toLine}`;
-          const sideLabel = side === "left" ? ` (${diffData.resolvedRef})` : "";
-          const key = `${fileName}:${lineLabel}:${side}`;
-          const label = `${esc(fileName)} line${fromLine !== toLine ? "s" : ""} ${lineLabel}${sideLabel}`;
-          const snippet = extractSnippet(diffRow, side, fromLine, toLine);
 
-          createCommentRow({
-            key,
-            label,
-            side,
-            anchorEl: diffRow,
-            onSave: (text, images) => {
-              annotations.set(key, {
-                file: fileName,
-                fromLine,
-                toLine,
-                side,
-                text,
-                images,
-                snippet,
-              });
-              if (lineNumEl)
-                lineNumEl.classList.add("has-comment", "border-l-[3px]", "border-l-gh-accent");
-            },
-            onDelete: () => {
-              if (lineNumEl)
-                lineNumEl.classList.remove("has-comment", "border-l-[3px]", "border-l-gh-accent");
-            },
-            onEdit: () => showCommentForm(diffRow, side, lineNumEl, fromLine, toLine),
-          });
-        }
+          // Unified comment row creation for both line-level and file-level comments
+          function createCommentRow(opts) {
+            const { key, label, side, annotation, anchorEl, onSave, onDelete, onEdit } = opts;
+            const useLayout = side !== "file";
 
-        // --- File-level comments ---
-        function showFileComment(fileName, headerEl) {
-          const key = `${fileName}:file:file`;
-          const label = `${esc(fileName)} (file comment)`;
+            const existing = document.querySelector(`[data-comment-key="${CSS.escape(key)}"]`);
+            if (existing) {
+              existing.querySelector("textarea")?.focus();
+              return;
+            }
 
-          createCommentRow({
-            key,
-            label,
-            side: "file",
-            anchorEl: headerEl,
-            onSave: (text, images) => {
-              annotations.set(key, {
-                file: fileName,
-                fromLine: 0,
-                toLine: 0,
-                side: "file",
-                type: "file",
-                text,
-                images,
-              });
-            },
-            onEdit: () => showFileComment(fileName, headerEl),
-          });
-        }
+            const commentRow = document.createElement("div");
+            commentRow.className = useLayout
+              ? "flex border-b border-gh-borderSubtle"
+              : "border-b border-gh-borderSubtle";
+            commentRow.setAttribute("data-comment-key", key);
 
-        targetEl.addEventListener("click", async (e) => {
-          const expandBar = e.target.closest(".expand-bar");
-          if (expandBar) {
-            const { expandFile, expandFromOld, expandToOld, expandFromNew, expandToNew } =
-              expandBar.dataset;
-            const fromNew = parseInt(expandFromNew, 10);
-            const toNew = parseInt(expandToNew, 10);
-            if (isNaN(fromNew) || isNaN(toNew) || toNew < fromNew) return;
-            expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono">Loading...</span>`;
-            try {
-              const res = await fetch(
-                `/api/context?file=${encodeURIComponent(expandFile)}&start=${fromNew}&end=${toNew}`,
-              );
-              const data = await res.json();
-              if (!data.lines) return;
-              const lang = langFromFile(expandFile);
-              let rowsHtml = "";
-              for (let i = 0; i < data.lines.length; i++) {
-                const oldNum = parseInt(expandFromOld, 10) + i;
-                const newNum = fromNew + i;
-                const code = data.lines[i];
-                const highlighted = highlightCode(code, lang);
-                const content = `<span class="select-none text-gh-muted"> </span>${highlighted}`;
-                if (viewMode === "split") {
-                  rowsHtml += `<div class="diff-row flex border-b border-gh-borderSubtle" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
-                  rowsHtml += `<div class="diff-side flex flex-1 min-w-0 border-r border-gh-border" data-side-type="left">`;
-                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
-                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
-                  rowsHtml += `</div>`;
-                  rowsHtml += `<div class="diff-side flex flex-1 min-w-0" data-side-type="right">`;
-                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
-                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
-                  rowsHtml += `</div></div>`;
+            const existingAnn = annotations.get(key);
+            const formHtml = buildCommentFormHTML(
+              label,
+              existingAnn?.text || "",
+              annotations.has(key),
+            );
+            commentRow.innerHTML = useLayout ? wrapForLayout(formHtml, side) : formHtml;
+
+            anchorEl.after(commentRow);
+            const imgHandler = setupImageSupport(commentRow);
+            commentRow.querySelector("textarea")?.focus();
+
+            if (existingAnn?.images) {
+              for (const src of existingAnn.images) imgHandler.addImage(src);
+            }
+
+            function renderSaved() {
+              const savedHtml = buildSavedHTML(annotations.get(key));
+              commentRow.innerHTML = useLayout ? wrapForLayout(savedHtml, side) : savedHtml;
+            }
+
+            commentRow.addEventListener("click", (ev) => {
+              const action = ev.target.dataset?.action;
+              if (!action) return;
+              if (action === "save") {
+                const text = commentRow.querySelector("textarea").value.trim();
+                const images = imgHandler.getImages();
+                if (text || images.length) {
+                  onSave(text, images);
+                  renderSaved();
                 } else {
-                  rowsHtml += `<div class="diff-row flex border-b border-gh-borderSubtle" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
-                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
-                  rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
-                  rowsHtml += `<div class="${CODE_CLASSES}">${content}</div></div>`;
+                  commentRow.remove();
+                }
+                clearHighlight();
+                updateCommentCount();
+              } else if (action === "delete") {
+                if (onDelete) onDelete();
+                annotations.delete(key);
+                commentRow.remove();
+                clearHighlight();
+                updateCommentCount();
+              } else if (action === "cancel") {
+                if (annotations.has(key)) {
+                  renderSaved();
+                } else {
+                  commentRow.remove();
+                }
+                clearHighlight();
+              } else if (action === "edit") {
+                commentRow.remove();
+                onEdit();
+              }
+            });
+
+            setupCommentKeydown(commentRow);
+          }
+
+          // --- Line-level comments ---
+          function extractSnippet(diffRow, side, fromLine, toLine) {
+            const file = diffRow.closest(".diff-file");
+            if (!file) return "";
+            const sideAttr = side === "left" ? "left" : "right";
+            const rows = file.querySelectorAll(".diff-row");
+            const lines = [];
+            for (const row of rows) {
+              const lineNumEl = row.querySelector(`.diff-linenum[data-side="${sideAttr}"]`);
+              if (!lineNumEl || lineNumEl.classList.contains("empty")) continue;
+              const num = parseInt(lineNumEl.dataset.line, 10);
+              if (isNaN(num) || num < fromLine || num > toLine) continue;
+              // In split view, code is 2nd child of the side container
+              const sideEl = row.querySelector(`[data-side-type="${sideAttr}"]`);
+              let text = "";
+              if (sideEl) {
+                const codeEl = sideEl.children[1];
+                text = codeEl ? codeEl.textContent : "";
+              } else {
+                // Unified view: last child of the row is the code cell
+                const children = row.children;
+                text = children.length ? children[children.length - 1].textContent : "";
+              }
+              lines.push(text);
+            }
+            return lines.join("\n");
+          }
+
+          function showCommentForm(diffRow, side, lineNumEl, fromLine, toLine) {
+            const fileName = diffRow.dataset.file;
+            if (fromLine == null) {
+              fromLine = parseInt(lineNumEl.dataset.line, 10) || 0;
+              toLine = fromLine;
+            }
+            const lineLabel = fromLine === toLine ? `${fromLine}` : `${fromLine}-${toLine}`;
+            const sideLabel = side === "left" ? ` (${currentDiffData.resolvedRef})` : "";
+            const key = `${fileName}:${lineLabel}:${side}`;
+            const label = `${esc(fileName)} line${fromLine !== toLine ? "s" : ""} ${lineLabel}${sideLabel}`;
+            const snippet = extractSnippet(diffRow, side, fromLine, toLine);
+
+            createCommentRow({
+              key,
+              label,
+              side,
+              anchorEl: diffRow,
+              onSave: (text, images) => {
+                annotations.set(key, {
+                  file: fileName,
+                  fromLine,
+                  toLine,
+                  side,
+                  text,
+                  images,
+                  snippet,
+                });
+                if (lineNumEl)
+                  lineNumEl.classList.add("has-comment", "border-l-[3px]", "border-l-gh-accent");
+              },
+              onDelete: () => {
+                if (lineNumEl)
+                  lineNumEl.classList.remove("has-comment", "border-l-[3px]", "border-l-gh-accent");
+              },
+              onEdit: () => showCommentForm(diffRow, side, lineNumEl, fromLine, toLine),
+            });
+          }
+
+          // --- File-level comments ---
+          function showFileComment(fileName, headerEl) {
+            const key = `${fileName}:file:file`;
+            const label = `${esc(fileName)} (file comment)`;
+
+            createCommentRow({
+              key,
+              label,
+              side: "file",
+              anchorEl: headerEl,
+              onSave: (text, images) => {
+                annotations.set(key, {
+                  file: fileName,
+                  fromLine: 0,
+                  toLine: 0,
+                  side: "file",
+                  type: "file",
+                  text,
+                  images,
+                });
+              },
+              onEdit: () => showFileComment(fileName, headerEl),
+            });
+          }
+
+          targetEl.addEventListener("click", async (e) => {
+            const expandBar = e.target.closest(".expand-bar");
+            if (expandBar) {
+              const { expandFile, expandFromOld, expandToOld, expandFromNew, expandToNew } =
+                expandBar.dataset;
+              const fromNew = parseInt(expandFromNew, 10);
+              const toNew = parseInt(expandToNew, 10);
+              if (isNaN(fromNew) || isNaN(toNew) || toNew < fromNew) return;
+              expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono">Loading...</span>`;
+              try {
+                const res = await fetch(
+                  `/api/context?file=${encodeURIComponent(expandFile)}&start=${fromNew}&end=${toNew}`,
+                );
+                const data = await res.json();
+                if (!data.lines) return;
+                const lang = langFromFile(expandFile);
+                let rowsHtml = "";
+                for (let i = 0; i < data.lines.length; i++) {
+                  const oldNum = parseInt(expandFromOld, 10) + i;
+                  const newNum = fromNew + i;
+                  const code = data.lines[i];
+                  const highlighted = highlightCode(code, lang);
+                  const content = `<span class="select-none text-gh-muted"> </span>${highlighted}`;
+                  if (viewMode === "split") {
+                    rowsHtml += `<div class="diff-row flex border-b border-gh-borderSubtle" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
+                    rowsHtml += `<div class="diff-side flex flex-1 min-w-0 border-r border-gh-border" data-side-type="left">`;
+                    rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
+                    rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
+                    rowsHtml += `</div>`;
+                    rowsHtml += `<div class="diff-side flex flex-1 min-w-0" data-side-type="right">`;
+                    rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
+                    rowsHtml += `<div class="${CODE_CLASSES}">${content}</div>`;
+                    rowsHtml += `</div></div>`;
+                  } else {
+                    rowsHtml += `<div class="diff-row flex border-b border-gh-borderSubtle" data-file="${esc(expandFile)}" data-left="${oldNum}" data-right="${newNum}">`;
+                    rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="left" data-line="${oldNum}">${oldNum}</div>`;
+                    rowsHtml += `<div class="diff-linenum bg-gh-surface ${LINENUM_CLASSES}" data-side="right" data-line="${newNum}">${newNum}</div>`;
+                    rowsHtml += `<div class="${CODE_CLASSES}">${content}</div></div>`;
+                  }
+                }
+                const container = document.createElement("div");
+                container.innerHTML = rowsHtml;
+                expandBar.replaceWith(...container.children);
+              } catch {
+                expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono text-gh-delFg">Failed to load</span>`;
+              }
+              return;
+            }
+
+            const collapseBtn = e.target.closest("[data-collapse]");
+            if (collapseBtn) {
+              const fileEl = collapseBtn.closest(".diff-file");
+              if (!fileEl) return;
+              const content = fileEl.querySelector(".diff-file-content");
+              if (!content) return;
+              const isCollapsed = content.classList.contains("collapsed");
+              content.classList.toggle("collapsed");
+              const svg = collapseBtn.querySelector("svg");
+              if (svg) svg.style.transform = isCollapsed ? "" : "rotate(-90deg)";
+              return;
+            }
+
+            const copyBtn = e.target.closest("[data-copy-diff]");
+            if (copyBtn) {
+              const fileName = copyBtn.dataset.copyDiff;
+              const chunks = currentDiffData.patch.split(/(?=^diff --git )/m);
+              const fileDiff =
+                chunks.find((c) => c.includes(`a/${fileName}`) || c.includes(`b/${fileName}`)) ||
+                "";
+              navigator.clipboard.writeText(fileDiff.trim());
+              copyBtn.style.color = "var(--color-green)";
+              setTimeout(() => {
+                copyBtn.style.color = "";
+              }, 1000);
+              return;
+            }
+
+            const richToggle = e.target.closest("[data-rich-toggle]");
+            if (richToggle) {
+              const fileName = richToggle.dataset.richToggle;
+              const fileEl = richToggle.closest(".diff-file");
+              if (!fileEl) return;
+              const content = fileEl.querySelector(".diff-file-content");
+              const inner = content?.querySelector(".diff-content-inner");
+              if (!inner) return;
+              const isRich = richToggle.dataset.richActive === "true";
+              if (isRich) {
+                // Switch back to code diff
+                richToggle.dataset.richActive = "false";
+                richToggle.innerHTML = RICH_DIFF_ICON;
+                richToggle.title = "Display rich diff";
+                richToggle.classList.remove("text-gh-text");
+                richToggle.classList.add("text-gh-muted");
+                const cached = inner._codeDiffHTML;
+                if (cached) inner.innerHTML = cached;
+              } else {
+                // Switch to rich diff
+                inner._codeDiffHTML = inner._codeDiffHTML || inner.innerHTML;
+                richToggle.dataset.richActive = "true";
+                richToggle.innerHTML = CODE_DIFF_ICON;
+                richToggle.title = "Display source diff";
+                richToggle.classList.remove("text-gh-muted");
+                richToggle.classList.add("text-gh-text");
+                inner.innerHTML =
+                  '<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Loading...</p></div>';
+                fetch(`/api/file-versions?file=${encodeURIComponent(fileName)}`)
+                  .then((r) => r.json())
+                  .then((data) => {
+                    if (richToggle.dataset.richActive !== "true") return;
+                    const newContent = data.new || "";
+                    const oldContent = data.old || "";
+                    const isNewFile = !oldContent;
+                    function rewriteImgSrc(htmlStr) {
+                      const dir = fileName.includes("/") ? fileName.replace(/\/[^/]+$/, "/") : "";
+                      return htmlStr.replace(
+                        /(<img\s[^>]*?\bsrc=["'])([^"']+)(["'])/gi,
+                        (m, pre, src, post) => {
+                          if (
+                            src.startsWith("http://") ||
+                            src.startsWith("https://") ||
+                            src.startsWith("data:") ||
+                            src.startsWith("/")
+                          )
+                            return m;
+                          const resolved = new URL(src, `http://x/${dir}__anchor__`).pathname
+                            .slice(1)
+                            .replace("__anchor__", "");
+                          return pre + `/api/raw-file?file=${encodeURIComponent(resolved)}` + post;
+                        },
+                      );
+                    }
+                    const mdContent = newContent.replace(/^---\n[\s\S]*?\n---\n?/, "");
+                    const html = rewriteImgSrc(marked.parse(mdContent));
+                    if (isNewFile) {
+                      inner.innerHTML = `<div class="rich-diff-content rich-diff-added">${html}</div>`;
+                    } else {
+                      inner.innerHTML = `<div class="rich-diff-content">${html}</div>`;
+                    }
+                  })
+                  .catch(() => {
+                    inner.innerHTML =
+                      '<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.</p></div>';
+                  });
+              }
+              return;
+            }
+
+            const viewedCb = e.target.closest(".viewed-checkbox");
+            if (viewedCb) {
+              const fileName = viewedCb.dataset.viewed;
+              setViewed(fileName, viewedCb.checked);
+              const fileEl = viewedCb.closest(".diff-file");
+              if (fileEl) {
+                const content = fileEl.querySelector(".diff-file-content");
+                const svg = fileEl.querySelector(".collapse-btn svg");
+                if (content) {
+                  if (viewedCb.checked) content.classList.add("collapsed");
+                  else content.classList.remove("collapsed");
+                  if (svg) svg.style.transform = viewedCb.checked ? "rotate(-90deg)" : "";
                 }
               }
-              const container = document.createElement("div");
-              container.innerHTML = rowsHtml;
-              expandBar.replaceWith(...container.children);
-            } catch {
-              expandBar.innerHTML = `${EXPAND_ICON}<span class="font-mono text-gh-delFg">Failed to load</span>`;
+              return;
             }
-            return;
-          }
 
-          const collapseBtn = e.target.closest("[data-collapse]");
-          if (collapseBtn) {
-            const fileEl = collapseBtn.closest(".diff-file");
-            if (!fileEl) return;
-            const content = fileEl.querySelector(".diff-file-content");
-            if (!content) return;
-            const isCollapsed = content.classList.contains("collapsed");
-            content.classList.toggle("collapsed");
-            const svg = collapseBtn.querySelector("svg");
-            if (svg) svg.style.transform = isCollapsed ? "" : "rotate(-90deg)";
-            return;
-          }
-
-          const copyBtn = e.target.closest("[data-copy-diff]");
-          if (copyBtn) {
-            const fileName = copyBtn.dataset.copyDiff;
-            const chunks = diffData.patch.split(/(?=^diff --git )/m);
-            const fileDiff =
-              chunks.find((c) => c.includes(`a/${fileName}`) || c.includes(`b/${fileName}`)) || "";
-            navigator.clipboard.writeText(fileDiff.trim());
-            copyBtn.style.color = "var(--color-green)";
-            setTimeout(() => {
-              copyBtn.style.color = "";
-            }, 1000);
-            return;
-          }
-
-          const richToggle = e.target.closest("[data-rich-toggle]");
-          if (richToggle) {
-            const fileName = richToggle.dataset.richToggle;
-            const fileEl = richToggle.closest(".diff-file");
-            if (!fileEl) return;
-            const content = fileEl.querySelector(".diff-file-content");
-            const inner = content?.querySelector(".diff-content-inner");
-            if (!inner) return;
-            const isRich = richToggle.dataset.richActive === "true";
-            if (isRich) {
-              // Switch back to code diff
-              richToggle.dataset.richActive = "false";
-              richToggle.innerHTML = RICH_DIFF_ICON;
-              richToggle.title = "Display rich diff";
-              richToggle.classList.remove("text-gh-text");
-              richToggle.classList.add("text-gh-muted");
-              const cached = inner._codeDiffHTML;
-              if (cached) inner.innerHTML = cached;
-            } else {
-              // Switch to rich diff
-              inner._codeDiffHTML = inner._codeDiffHTML || inner.innerHTML;
-              richToggle.dataset.richActive = "true";
-              richToggle.innerHTML = CODE_DIFF_ICON;
-              richToggle.title = "Display source diff";
-              richToggle.classList.remove("text-gh-muted");
-              richToggle.classList.add("text-gh-text");
-              inner.innerHTML =
-                '<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Loading...</p></div>';
-              fetch(`/api/file-versions?file=${encodeURIComponent(fileName)}`)
-                .then((r) => r.json())
-                .then((data) => {
-                  if (richToggle.dataset.richActive !== "true") return;
-                  const newContent = data.new || "";
-                  const oldContent = data.old || "";
-                  const isNewFile = !oldContent;
-                  function rewriteImgSrc(htmlStr) {
-                    const dir = fileName.includes("/") ? fileName.replace(/\/[^/]+$/, "/") : "";
-                    return htmlStr.replace(
-                      /(<img\s[^>]*?\bsrc=["'])([^"']+)(["'])/gi,
-                      (m, pre, src, post) => {
-                        if (
-                          src.startsWith("http://") ||
-                          src.startsWith("https://") ||
-                          src.startsWith("data:") ||
-                          src.startsWith("/")
-                        )
-                          return m;
-                        const resolved = new URL(src, `http://x/${dir}__anchor__`).pathname
-                          .slice(1)
-                          .replace("__anchor__", "");
-                        return pre + `/api/raw-file?file=${encodeURIComponent(resolved)}` + post;
-                      },
-                    );
-                  }
-                  const mdContent = newContent.replace(/^---\n[\s\S]*?\n---\n?/, "");
-                  const html = rewriteImgSrc(marked.parse(mdContent));
-                  if (isNewFile) {
-                    inner.innerHTML = `<div class="rich-diff-content rich-diff-added">${html}</div>`;
-                  } else {
-                    inner.innerHTML = `<div class="rich-diff-content">${html}</div>`;
-                  }
-                })
-                .catch(() => {
-                  inner.innerHTML =
-                    '<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.</p></div>';
-                });
+            const commentBtn = e.target.closest("[data-file-comment]");
+            if (commentBtn && !submitted) {
+              const fileName = commentBtn.dataset.fileComment;
+              const headerEl = commentBtn.closest(".diff-file-header");
+              if (headerEl) showFileComment(fileName, headerEl);
             }
-            return;
+          });
+
+          // --- Multi-line selection ---
+          let dragState = null;
+          let highlightedEls = [];
+
+          function getDiffRowsInRange(startRow, endRow) {
+            const file = startRow.closest(".diff-file");
+            if (!file) return [];
+            const allRows = Array.from(file.querySelectorAll(".diff-row"));
+            const si = allRows.indexOf(startRow);
+            const ei = allRows.indexOf(endRow);
+            if (si === -1 || ei === -1) return [];
+            return allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
           }
 
-          const viewedCb = e.target.closest(".viewed-checkbox");
-          if (viewedCb) {
-            const fileName = viewedCb.dataset.viewed;
-            setViewed(fileName, viewedCb.checked);
-            const fileEl = viewedCb.closest(".diff-file");
-            if (fileEl) {
-              const content = fileEl.querySelector(".diff-file-content");
-              const svg = fileEl.querySelector(".collapse-btn svg");
-              if (content) {
-                if (viewedCb.checked) content.classList.add("collapsed");
-                else content.classList.remove("collapsed");
-                if (svg) svg.style.transform = viewedCb.checked ? "rotate(-90deg)" : "";
+          function clearHighlight() {
+            for (const el of highlightedEls) el.classList.remove("side-select-range");
+            highlightedEls = [];
+          }
+
+          function highlightSide(rows, side) {
+            clearHighlight();
+            for (const r of rows) {
+              const sideEl = r.querySelector(`[data-side-type="${side}"]`);
+              if (sideEl) {
+                sideEl.classList.add("side-select-range");
+                highlightedEls.push(sideEl);
               }
             }
-            return;
           }
 
-          const commentBtn = e.target.closest("[data-file-comment]");
-          if (commentBtn && !submitted) {
-            const fileName = commentBtn.dataset.fileComment;
-            const headerEl = commentBtn.closest(".diff-file-header");
-            if (headerEl) showFileComment(fileName, headerEl);
-          }
-        });
+          targetEl.addEventListener("mousedown", (e) => {
+            if (submitted) return;
+            const lineNum = e.target.closest(".diff-linenum");
+            if (!lineNum || lineNum.classList.contains("empty")) return;
 
-        // --- Multi-line selection ---
-        let dragState = null;
-        let highlightedEls = [];
+            const diffRow = lineNum.closest(".diff-row");
+            if (!diffRow) return;
 
-        function getDiffRowsInRange(startRow, endRow) {
-          const file = startRow.closest(".diff-file");
-          if (!file) return [];
-          const allRows = Array.from(file.querySelectorAll(".diff-row"));
-          const si = allRows.indexOf(startRow);
-          const ei = allRows.indexOf(endRow);
-          if (si === -1 || ei === -1) return [];
-          return allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
-        }
+            const side = lineNum.dataset.side;
+            const line = parseInt(lineNum.dataset.line, 10);
+            if (isNaN(line)) return;
 
-        function clearHighlight() {
-          for (const el of highlightedEls) el.classList.remove("side-select-range");
-          highlightedEls = [];
-        }
+            const file = diffRow.closest(".diff-file");
+            const allRows = file ? Array.from(file.querySelectorAll(".diff-row")) : [];
+            dragState = {
+              startRow: diffRow,
+              startLine: line,
+              side,
+              startLineNum: lineNum,
+              allRows,
+            };
+            highlightSide([diffRow], side);
+            e.preventDefault();
+          });
 
-        function highlightSide(rows, side) {
-          clearHighlight();
-          for (const r of rows) {
-            const sideEl = r.querySelector(`[data-side-type="${side}"]`);
-            if (sideEl) {
-              sideEl.classList.add("side-select-range");
-              highlightedEls.push(sideEl);
-            }
-          }
-        }
+          targetEl.addEventListener("mousemove", (e) => {
+            if (!dragState) return;
+            const lineNum = e.target.closest(".diff-linenum");
+            if (!lineNum || lineNum.classList.contains("empty")) return;
+            if (lineNum.dataset.side !== dragState.side) return;
+            const diffRow = lineNum.closest(".diff-row");
+            if (!diffRow) return;
+            // Use cached allRows from mousedown
+            const { allRows } = dragState;
+            const si = allRows.indexOf(dragState.startRow);
+            const ei = allRows.indexOf(diffRow);
+            if (si === -1 || ei === -1) return;
+            const rows = allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
+            highlightSide(rows, dragState.side);
+          });
 
-        targetEl.addEventListener("mousedown", (e) => {
-          if (submitted) return;
-          const lineNum = e.target.closest(".diff-linenum");
-          if (!lineNum || lineNum.classList.contains("empty")) return;
+          document.addEventListener(
+            "mouseup",
+            (e) => {
+              if (!dragState) return;
+              const { startRow, startLine, side, startLineNum } = dragState;
+              dragState = null;
 
-          const diffRow = lineNum.closest(".diff-row");
-          if (!diffRow) return;
+              let endLine = startLine;
+              let endRow = startRow;
+              const lineNum = e.target.closest(".diff-linenum");
+              if (
+                lineNum &&
+                !lineNum.classList.contains("empty") &&
+                lineNum.dataset.side === side
+              ) {
+                endRow = lineNum.closest(".diff-row");
+                endLine = parseInt(lineNum.dataset.line, 10) || startLine;
+              }
 
-          const side = lineNum.dataset.side;
-          const line = parseInt(lineNum.dataset.line, 10);
-          if (isNaN(line)) return;
+              const fromLine = Math.min(startLine, endLine);
+              const toLine = Math.max(startLine, endLine);
+              const lastRow = endLine >= startLine ? endRow : startRow;
+              const rangeRows = getDiffRowsInRange(startRow, endRow);
+              highlightSide(rangeRows, side);
+              showCommentForm(lastRow, side, startLineNum, fromLine, toLine);
+            },
+            docSignal,
+          );
 
-          const file = diffRow.closest(".diff-file");
-          const allRows = file ? Array.from(file.querySelectorAll(".diff-row")) : [];
-          dragState = { startRow: diffRow, startLine: line, side, startLineNum: lineNum, allRows };
-          highlightSide([diffRow], side);
-          e.preventDefault();
-        });
-
-        targetEl.addEventListener("mousemove", (e) => {
-          if (!dragState) return;
-          const lineNum = e.target.closest(".diff-linenum");
-          if (!lineNum || lineNum.classList.contains("empty")) return;
-          if (lineNum.dataset.side !== dragState.side) return;
-          const diffRow = lineNum.closest(".diff-row");
-          if (!diffRow) return;
-          // Use cached allRows from mousedown
-          const { allRows } = dragState;
-          const si = allRows.indexOf(dragState.startRow);
-          const ei = allRows.indexOf(diffRow);
-          if (si === -1 || ei === -1) return;
-          const rows = allRows.slice(Math.min(si, ei), Math.max(si, ei) + 1);
-          highlightSide(rows, dragState.side);
-        });
-
-        document.addEventListener("mouseup", (e) => {
-          if (!dragState) return;
-          const { startRow, startLine, side, startLineNum } = dragState;
-          dragState = null;
-
-          let endLine = startLine;
-          let endRow = startRow;
-          const lineNum = e.target.closest(".diff-linenum");
-          if (lineNum && !lineNum.classList.contains("empty") && lineNum.dataset.side === side) {
-            endRow = lineNum.closest(".diff-row");
-            endLine = parseInt(lineNum.dataset.line, 10) || startLine;
+          // --- Submit ---
+          function updateCommentCount() {
+            const n = annotations.size;
+            const text = `${n} comment${n !== 1 ? "s" : ""}`;
+            document.getElementById("comment-count").textContent = text;
+            document.getElementById("comment-count-bottom").textContent = text;
           }
 
-          const fromLine = Math.min(startLine, endLine);
-          const toLine = Math.max(startLine, endLine);
-          const lastRow = endLine >= startLine ? endRow : startRow;
-          const rangeRows = getDiffRowsInRange(startRow, endRow);
-          highlightSide(rangeRows, side);
-          showCommentForm(lastRow, side, startLineNum, fromLine, toLine);
-        });
+          const generalImgHandler = setupImageSupport(
+            document.getElementById("general-comment-section"),
+          );
 
-        // --- Submit ---
-        function updateCommentCount() {
-          const n = annotations.size;
-          const text = `${n} comment${n !== 1 ? "s" : ""}`;
-          document.getElementById("comment-count").textContent = text;
-          document.getElementById("comment-count-bottom").textContent = text;
-        }
-
-        const generalImgHandler = setupImageSupport(
-          document.getElementById("general-comment-section"),
-        );
-
-        document.getElementById("btn-cancel").addEventListener("click", () => {
-          if (submitted) return;
-          submitted = true;
-          fetch("/api/feedback", {
-            method: "POST",
-            headers: { "Content-Type": "application/json" },
-            body: JSON.stringify({
-              annotations: [],
-              generalComment: "",
-              approved: false,
-              cancelled: true,
-            }),
-          }).catch(() => {});
-          app.innerHTML = renderEndScreen("Review cancelled", true);
-        });
-        document.getElementById("btn-approve").addEventListener("click", () => submit(true));
-        document.getElementById("btn-submit").addEventListener("click", () => submit(false));
-
-        document.addEventListener("keydown", (e) => {
-          if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !submitted) {
-            if (!document.activeElement?.closest("[data-comment-key]")) submit(false);
-          }
-        });
-
-        async function submit(approved) {
-          if (submitted) return;
-          submitted = true;
-          const payload = {
-            annotations: Array.from(annotations.values()),
-            generalComment: document.getElementById("general-comment")?.value?.trim() || "",
-            generalImages: generalImgHandler.getImages(),
-            approved,
-          };
-          try {
-            await fetch("/api/feedback", {
+          document.getElementById("btn-cancel").addEventListener("click", () => {
+            if (submitted) return;
+            submitted = true;
+            fetch("/api/feedback", {
               method: "POST",
               headers: { "Content-Type": "application/json" },
-              body: JSON.stringify(payload),
-            });
-          } catch {}
-          app.innerHTML = renderEndScreen(approved ? "Changes approved" : "Feedback sent");
-        }
+              body: JSON.stringify({
+                annotations: [],
+                generalComment: "",
+                approved: false,
+                cancelled: true,
+              }),
+            }).catch(() => {});
+            app.innerHTML = renderEndScreen("Review cancelled", true);
+          });
+          document.getElementById("btn-approve").addEventListener("click", () => submit(true));
+          document.getElementById("btn-submit").addEventListener("click", () => submit(false));
+
+          document.addEventListener(
+            "keydown",
+            (e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey) && !submitted) {
+                if (!document.activeElement?.closest("[data-comment-key]")) submit(false);
+              }
+            },
+            docSignal,
+          );
+
+          async function submit(approved) {
+            if (submitted) return;
+            submitted = true;
+            const payload = {
+              annotations: Array.from(annotations.values()),
+              generalComment: document.getElementById("general-comment")?.value?.trim() || "",
+              generalImages: generalImgHandler.getImages(),
+              approved,
+            };
+            try {
+              await fetch("/api/feedback", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify(payload),
+              });
+            } catch {}
+            app.innerHTML = renderEndScreen(approved ? "Changes approved" : "Feedback sent");
+          }
+        } // end renderDiffView
+
+        // --- Loading state ---
+        app.innerHTML = `<div class="flex items-center justify-center min-h-screen">
+          <div class="text-center">
+            <div class="w-6 h-6 border-2 border-gh-border border-t-gh-text rounded-full mx-auto mb-4 animate-spin"></div>
+            <p class="text-[13px] text-gh-muted">Loading diff...</p>
+          </div>
+        </div>`;
+
+        // Fetch commits and diff in parallel
+        Promise.all([
+          fetch("/api/commits")
+            .then((r) => r.json())
+            .catch(() => []),
+          fetch(`/api/diff?commit=${bootstrap.hasWorktreeChanges ? "working" : "all"}`).then((r) =>
+            r.json(),
+          ),
+        ])
+          .then(([commitList, diffData]) => {
+            commits = commitList;
+            renderDiffView(diffData);
+          })
+          .catch(() => {
+            app.innerHTML = `<div class="flex items-center justify-center min-h-screen">
+            <div class="text-center">
+              <p class="text-[13px] text-gh-delFg">Failed to load diff data</p>
+            </div>
+          </div>`;
+          });
       })();
     </script>
   </body>
