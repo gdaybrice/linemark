@@ -994,7 +994,7 @@
         </div>
       </div>
       <div class="flex-1 min-w-0 flex flex-col">
-        <div class="sticky top-0 z-[100] bg-gh-surface border-b border-gh-border px-4 py-2.5 flex items-center justify-between">
+        <div class="sticky top-0 z-[100] bg-gh-surface border-b border-gh-border px-4 flex items-center justify-between" style="height:47.5px">
           <div class="flex items-center gap-2">
             ${commitSelector}
             <span class="font-mono text-[11px] text-gh-muted ml-1">
@@ -1487,13 +1487,15 @@
                 }
               }
             }
+            function richBlockLabel(block, idx, fName) {
+              const heading = block.tagName.match(/^H[1-6]$/) ? block.textContent.trim() : "";
+              return heading ? `${esc(fName)} — ${esc(heading)}` : `${esc(fName)} block ${idx + 1}`;
+            }
+
             function openRichComment(blk, bIdx, fName) {
               const snippet = blk.textContent.trim().slice(0, 200);
-              const headingText = blk.tagName.match(/^H[1-6]$/) ? blk.textContent.trim() : "";
               const blockKey = `${fName}:block-${bIdx}:rich`;
-              const blockLabel = headingText
-                ? `${esc(fName)} — ${esc(headingText)}`
-                : `${esc(fName)} block ${bIdx + 1}`;
+              const blockLabel = richBlockLabel(blk, bIdx, fName);
 
               createCommentRow({
                 key: blockKey,
@@ -1533,9 +1535,7 @@
                 block.classList.add("has-comment");
                 createCommentRow({
                   key,
-                  label: block.tagName.match(/^H[1-6]$/)
-                    ? `${esc(fileName)} — ${esc(block.textContent.trim())}`
-                    : `${esc(fileName)} block ${idx + 1}`,
+                  label: richBlockLabel(block, idx, fileName),
                   side: "file",
                   anchorEl: block,
                   savedOnly: true,
@@ -1698,8 +1698,7 @@
                     instrumentRichBlocks(inner.querySelector(".rich-diff-content"), fileName);
                   })
                   .catch((err) => {
-                    inner.innerHTML =
-                      `<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.${err?.message ? " " + err.message : ""}</p></div>`;
+                    inner.innerHTML = `<div class="rich-diff-content"><p class="text-gh-muted text-[13px]">Failed to load rich diff.${err?.message ? " " + esc(err.message) : ""}</p></div>`;
                   });
               }
               return;
