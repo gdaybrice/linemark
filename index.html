@@ -1136,7 +1136,7 @@
           const lbl =
             a.type === "file"
               ? `${esc(a.file)} (file comment)`
-              : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}`;
+              : `${esc(a.file)} line${a.fromLine !== a.toLine ? "s" : ""} ${a.fromLine === a.toLine ? a.fromLine : a.fromLine + "-" + a.toLine}${a.side === "left" ? ` (${diffData.resolvedRef})` : ""}`;
           const imgHtml = (a.images || [])
             .map(
               (src) =>
@@ -1253,6 +1253,33 @@
         }
 
         // --- Line-level comments ---
+        function extractSnippet(diffRow, side, fromLine, toLine) {
+          const file = diffRow.closest(".diff-file");
+          if (!file) return "";
+          const sideAttr = side === "left" ? "left" : "right";
+          const rows = file.querySelectorAll(".diff-row");
+          const lines = [];
+          for (const row of rows) {
+            const lineNumEl = row.querySelector(`.diff-linenum[data-side="${sideAttr}"]`);
+            if (!lineNumEl || lineNumEl.classList.contains("empty")) continue;
+            const num = parseInt(lineNumEl.dataset.line, 10);
+            if (isNaN(num) || num < fromLine || num > toLine) continue;
+            // In split view, code is 2nd child of the side container
+            const sideEl = row.querySelector(`[data-side-type="${sideAttr}"]`);
+            let text = "";
+            if (sideEl) {
+              const codeEl = sideEl.children[1];
+              text = codeEl ? codeEl.textContent : "";
+            } else {
+              // Unified view: last child of the row is the code cell
+              const children = row.children;
+              text = children.length ? children[children.length - 1].textContent : "";
+            }
+            lines.push(text);
+          }
+          return lines.join("\n");
+        }
+
         function showCommentForm(diffRow, side, lineNumEl, fromLine, toLine) {
           const fileName = diffRow.dataset.file;
           if (fromLine == null) {
@@ -1260,8 +1287,10 @@
             toLine = fromLine;
           }
           const lineLabel = fromLine === toLine ? `${fromLine}` : `${fromLine}-${toLine}`;
+          const sideLabel = side === "left" ? ` (${diffData.resolvedRef})` : "";
           const key = `${fileName}:${lineLabel}:${side}`;
-          const label = `${esc(fileName)} line${fromLine !== toLine ? "s" : ""} ${lineLabel}`;
+          const label = `${esc(fileName)} line${fromLine !== toLine ? "s" : ""} ${lineLabel}${sideLabel}`;
+          const snippet = extractSnippet(diffRow, side, fromLine, toLine);
 
           createCommentRow({
             key,
@@ -1276,6 +1305,7 @@
                 side,
                 text,
                 images,
+                snippet,
               });
               if (lineNumEl)
                 lineNumEl.classList.add("has-comment", "border-l-[3px]", "border-l-gh-accent");

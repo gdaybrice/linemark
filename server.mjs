@@ -100,14 +100,20 @@ function imgLines(images) {
   return images.map((img) => `![image](${img})\n`).join("");
 }
 
-function formatFeedback(data) {
+function formatFeedback(data, diffData) {
   const { annotations, generalComment, generalImages, approved, cancelled } = data;
 
   if (cancelled) {
     return "## Code Review Feedback\n\nReview cancelled. No feedback provided.";
   }
 
+  const baseLabel = `${diffData.resolvedRef}@${diffData.mergeBase.slice(0, 7)}`;
+  const headLabel = diffData.branchName
+    ? `${diffData.branchName}@${diffData.headRef}`
+    : diffData.headRef;
+
   let md = "## Code Review Feedback\n";
+  md += `> Base: ${baseLabel} → Head: ${headLabel} (+ working tree)\n`;
 
   if (approved) {
     md += "\nChanges approved.";
@@ -131,11 +137,16 @@ function formatFeedback(data) {
       md += `**File comment**: ${a.text}\n${imgLines(a.images)}`;
     }
     for (const a of lineComments.sort((x, y) => (x.fromLine || x.line) - (y.fromLine || y.line))) {
+      const sideLabel = a.side === "left" ? ` (base: ${baseLabel})` : " (working tree)";
       const lineRef =
         a.fromLine && a.toLine && a.fromLine !== a.toLine
-          ? `Lines ${a.fromLine}-${a.toLine}`
-          : `Line ${a.fromLine || a.line}`;
-      md += `**${lineRef}**: ${a.text}\n${imgLines(a.images)}`;
+          ? `Lines ${a.fromLine}-${a.toLine}${sideLabel}`
+          : `Line ${a.fromLine || a.line}${sideLabel}`;
+      md += `**${lineRef}**: ${a.text}\n`;
+      if (a.snippet) {
+        md += `\`\`\`\n${a.snippet}\n\`\`\`\n`;
+      }
+      md += imgLines(a.images);
     }
   }
 
@@ -317,7 +328,7 @@ async function main() {
   });
 
   const feedback = await feedbackPromise;
-  const markdown = formatFeedback(feedback);
+  const markdown = formatFeedback(feedback, diffData);
   process.stdout.write(markdown + "\n");
 
   server.close();
