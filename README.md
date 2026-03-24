@@ -4,7 +4,7 @@
 
 <h1 align="center">linemark</h1>
 
-<p align="center">Review AI agent changes locally before they go in.</p>
+<p align="center">Review AI agent changes locally before you push.</p>
 
 <p align="center">
   <img src="screenshot.jpg" width="720" alt="linemark diff review UI">
