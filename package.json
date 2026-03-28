@@ -1,0 +1,13 @@
+{
+  "name": "linemark",
+  "version": "0.1.0",
+  "description": "Review AI agent changes locally before you push",
+  "type": "module",
+  "bin": {
+    "linemark": "./server.mjs"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "license": "MIT"
+}

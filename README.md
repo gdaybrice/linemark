@@ -33,10 +33,10 @@ No copy-pasting line numbers. No "on line 47 of auth.ts." Just click, comment, s
 ## Install
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/gdaybrice/linemark/main/install.sh | bash
+npx skills@latest add gdaybrice/linemark
 ```
 
-This clones linemark to `~/.linemark` and registers `/linemark` as a global Claude Code slash command. Works in any project. Just Node.js 18+, zero other dependencies.
+This registers `/linemark` as a Claude Code slash command. Works in any project. Just Node.js 18+, zero other dependencies.
 
 ## Usage
 

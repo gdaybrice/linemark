@@ -2,7 +2,7 @@
 name: linemark
 description: Open interactive diff review UI in browser for current changes
 allowed-tools:
-  - "Bash(node:*)"
+  - "Bash(npx*)"
 ---
 
 # Review Diff
@@ -14,7 +14,7 @@ Open an interactive diff review UI in the browser showing the full diff of the c
 Run the diff annotator server with an optional base ref argument. Defaults to `main`.
 
 ```bash
-node ~/.linemark/server.mjs $ARGUMENTS
+npx --yes github:gdaybrice/linemark $ARGUMENTS
 ```
 
 If no argument is provided, it diffs against `main`.
