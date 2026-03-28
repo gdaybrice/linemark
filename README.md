@@ -22,7 +22,7 @@ This is a code review problem. We solved it years ago with pull requests. But PR
 
 The feedback loop between you and an AI agent should feel like a pull request review. You see the diff. You click a line. You leave a comment. The agent reads your comments and addresses each one.
 
-That's what linemark does. Type `/linemark` in [Claude Code](https://docs.anthropic.com/en/docs/claude-code), and it opens a diff review UI in your browser. You annotate. You submit. Structured feedback goes back to the agent.
+That's what linemark does. Type `/linemark` in your AI coding agent, and it opens a diff review UI in your browser. You annotate. You submit. Structured feedback goes back to the agent.
 
 No copy-pasting line numbers. No "on line 47 of auth.ts." Just click, comment, submit.
 
@@ -36,17 +36,17 @@ No copy-pasting line numbers. No "on line 47 of auth.ts." Just click, comment, s
 npx skills@latest add gdaybrice/linemark
 ```
 
-This registers `/linemark` as a Claude Code slash command. Works in any project. Just Node.js 18+, zero other dependencies.
+This registers `/linemark` as a slash command in Claude Code, Cursor, Codex, Gemini CLI, and 40+ other agents. Works in any project. Just Node.js 18+, zero other dependencies.
 
 ## Usage
 
-1. Make changes (or let Claude make them)
+1. Make changes (or let your agent make them)
 2. Type `/linemark`
 3. Review the diff in your browser
 4. Comment on anything you want changed
 5. **Submit** to send feedback, or **Approve** to accept
 
-Claude reads your comments and addresses each one. You can run `/linemark` again to review the next round. Repeat until you're happy.
+Your agent reads your comments and addresses each one. Run `/linemark` again to review the next round. Repeat until you're happy.
 
 ## What you get
 
@@ -61,6 +61,6 @@ Claude reads your comments and addresses each one. You can run `/linemark` again
 
 ## How it works
 
-`/linemark` starts a local server and opens a review UI in your browser. It defaults to showing working tree changes, and you can switch between individual commits or all commits from the dropdown. When you submit, your comments come back as structured feedback on stdout. Claude Code reads them and acts on each one.
+`/linemark` starts a local server and opens a review UI in your browser. It defaults to showing working tree changes, and you can switch between individual commits or all commits from the dropdown. When you submit, your comments come back as structured feedback on stdout. Your agent reads them and acts on each one.
 
 One file for the server. One file for the UI. No build step. No dependencies beyond Node.
