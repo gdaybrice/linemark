@@ -10,7 +10,7 @@ const __dirname = dirname(fileURLToPath(import.meta.url));
 const MAX_BUFFER = 10 * 1024 * 1024;
 const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 
-const GIT_REF_RE = /^[a-zA-Z0-9_\-.\/@~^{}:]+$/;
+const GIT_REF_RE = /^[a-zA-Z0-9_\-./@~^{}:]+$/;
 function assertSafeRef(ref) {
   if (!GIT_REF_RE.test(ref)) {
     throw new Error(`Invalid git ref: ${ref}`);
