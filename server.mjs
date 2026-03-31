@@ -1,14 +1,26 @@
 #!/usr/bin/env node
 
 import { createServer } from "node:http";
-import { execSync } from "node:child_process";
+import { execSync, execFileSync } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join, resolve } from "node:path";
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
-const baseRef = process.argv[2] || "root";
 const MAX_BUFFER = 10 * 1024 * 1024;
+const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
+
+const GIT_REF_RE = /^[a-zA-Z0-9_\-.\/@~^{}:]+$/;
+function assertSafeRef(ref) {
+  if (!GIT_REF_RE.test(ref)) {
+    throw new Error(`Invalid git ref: ${ref}`);
+  }
+}
+
+const baseRef = process.argv[2] || "root";
+if (baseRef !== "root" && baseRef !== "empty") {
+  assertSafeRef(baseRef);
+}
 
 function safePath(cwd, file) {
   const filePath = resolve(cwd, file);
@@ -19,7 +31,6 @@ function resolveBootstrap() {
   const cwd = process.cwd();
   const execOpts = { cwd, encoding: "utf8", maxBuffer: MAX_BUFFER };
 
-  const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
   let mergeBase;
   let resolvedRef = baseRef;
   if (baseRef === "root" || baseRef === "empty") {
@@ -33,11 +44,11 @@ function resolveBootstrap() {
     }
   } else {
     try {
-      mergeBase = execSync(`git merge-base ${baseRef} HEAD`, execOpts).trim();
+      mergeBase = execFileSync("git", ["merge-base", baseRef, "HEAD"], execOpts).trim();
     } catch {
       try {
         resolvedRef = `origin/${baseRef}`;
-        mergeBase = execSync(`git merge-base ${resolvedRef} HEAD`, execOpts).trim();
+        mergeBase = execFileSync("git", ["merge-base", resolvedRef, "HEAD"], execOpts).trim();
       } catch {
         process.stderr.write(
           `Warning: ref '${baseRef}' (and 'origin/${baseRef}') not found, falling back to HEAD\n`,
@@ -87,17 +98,15 @@ function getDiff(bootstrap, commitHash) {
       // no tracked changes
     }
   } else if (commitHash && commitHash !== "all") {
-    // Single commit diff
+    assertSafeRef(commitHash);
     try {
-      patch = execSync(`git diff ${commitHash}~1 ${commitHash}`, {
+      patch = execFileSync("git", ["diff", `${commitHash}~1`, commitHash], {
         ...execOpts,
         stdio: ["pipe", "pipe", "pipe"],
       });
     } catch {
-      // First commit on branch — diff against empty tree
       try {
-        const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
-        patch = execSync(`git diff ${EMPTY_TREE} ${commitHash}`, execOpts);
+        patch = execFileSync("git", ["diff", EMPTY_TREE, commitHash], execOpts);
       } catch {
         // no changes
       }
@@ -105,7 +114,7 @@ function getDiff(bootstrap, commitHash) {
   } else {
     // Full branch diff: merge base to working tree
     try {
-      patch = execSync(`git diff ${mergeBase}`, execOpts);
+      patch = execFileSync("git", ["diff", mergeBase], execOpts);
     } catch {
       // no tracked changes
     }
@@ -123,7 +132,7 @@ function getDiff(bootstrap, commitHash) {
 
     for (const file of untrackedFiles) {
       try {
-        const fileDiff = execSync(`git diff --no-index /dev/null "${file}"`, execOpts);
+        const fileDiff = execFileSync("git", ["diff", "--no-index", "/dev/null", file], execOpts);
         patch += "\n" + fileDiff;
       } catch (e) {
         if (e.stdout) patch += "\n" + e.stdout;
@@ -138,8 +147,9 @@ function getCommits(bootstrap) {
   const { cwd, mergeBase } = bootstrap;
   const execOpts = { cwd, encoding: "utf8", maxBuffer: MAX_BUFFER };
   try {
-    const raw = execSync(
-      `git log --format='%H%x00%h%x00%s%x00%an%x00%aI' ${mergeBase}..HEAD`,
+    const raw = execFileSync(
+      "git",
+      ["log", "--format=%H%x00%h%x00%s%x00%an%x00%aI", `${mergeBase}..HEAD`],
       execOpts,
     );
     return raw
@@ -316,7 +326,7 @@ async function main() {
       }
       let oldContent = "";
       try {
-        oldContent = execSync(`git show ${bootstrap.mergeBase}:"${file}"`, {
+        oldContent = execFileSync("git", ["show", `${bootstrap.mergeBase}:${file}`], {
           cwd: bootstrap.cwd,
           encoding: "utf8",
           maxBuffer: MAX_BUFFER,
@@ -346,7 +356,7 @@ async function main() {
       try {
         let buf;
         if (ref === "old") {
-          buf = execSync(`git show ${bootstrap.mergeBase}:"${file}"`, {
+          buf = execFileSync("git", ["show", `${bootstrap.mergeBase}:${file}`], {
             cwd: bootstrap.cwd,
             encoding: "buffer",
             maxBuffer: MAX_BUFFER,
