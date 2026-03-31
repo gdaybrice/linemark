@@ -992,9 +992,9 @@
           const hasWt = diffData.hasWorktreeChanges;
           const commitSelector = `<div class="relative inline-block">
                 <select id="commit-selector" class="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10">
-                  ${hasWt ? '<option value="working">Working tree</option>' : ""}
+                  ${hasWt ? '<option value="working" selected>Working tree</option>' : ""}
                   ${commitOptions}
-                  <option value="all">All commits</option>
+                  <option value="all"${hasWt ? "" : " selected"}>All commits</option>
                 </select>
                 <span id="commit-selector-display" class="inline-flex items-center gap-1.5 font-mono text-[12px] text-gh-text bg-gh-badgeBg border border-gh-border px-2 py-1 cursor-pointer select-none whitespace-nowrap">
                   <span id="commit-selector-label">${commitLabel(hasWt ? "working" : "all")}</span>
