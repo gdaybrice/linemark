@@ -726,6 +726,9 @@
         function isImageFile(name) {
           return IMAGE_EXTENSIONS.has(getExt(name));
         }
+        function resolvedName(f) {
+          return f.newName && f.newName !== "/dev/null" ? f.newName : f.oldName;
+        }
         function renderImagePreview(name, file) {
           const isNew = !file.oldName || file.oldName === "/dev/null";
           const isDeleted = !file.newName || file.newName === "/dev/null";
@@ -813,7 +816,7 @@
         function renderSplitDiff() {
           let html = "";
           for (const file of parsedFiles) {
-            const name = file.newName || file.oldName;
+            const name = resolvedName(file);
             currentFileLang = langFromFile(name);
             html += `<div class="diff-file border-b border-gh-border" id="file-${CSS.escape(name)}">`;
             html += renderFileHeader(file, name);
@@ -876,7 +879,7 @@
         function renderUnifiedDiff() {
           let html = "";
           for (const file of parsedFiles) {
-            const name = file.newName || file.oldName;
+            const name = resolvedName(file);
             currentFileLang = langFromFile(name);
             html += `<div class="diff-file border-b border-gh-border" id="file-${CSS.escape(name)}">`;
             html += renderFileHeader(file, name);
@@ -950,7 +953,7 @@
           parsedFiles = Diff2Html ? Diff2Html.parse(diffData.patch || "") : [];
           fileStats = new Map(
             parsedFiles.map((f) => {
-              const name = f.newName || f.oldName;
+              const name = resolvedName(f);
               return [name, { name, adds: f.addedLines, dels: f.deletedLines }];
             }),
           );
