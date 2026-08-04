@@ -540,12 +540,135 @@
         }
 
         function updateViewedCount() {
+          // Viewed state persists across selection changes, so only count files that
+          // are actually in the current diff.
+          const visible = [...viewedFiles].filter((f) => fileStats.has(f)).length;
           const el = document.getElementById("viewed-count");
-          if (el) el.textContent = `${viewedFiles.size} / ${fileStats.size} viewed`;
+          if (el) el.textContent = `${visible} / ${fileStats.size} viewed`;
         }
 
-        function commitLabel(v) {
-          return v === "working" ? "Working tree" : v === "all" ? "All commits" : v.slice(0, 7);
+        // Which commits (and whether the working tree) are part of the reviewed diff.
+        let selectedCommits = new Set();
+        let worktreeSelected = false;
+        let selectionFetchId = 0;
+        let selectionDebounce = null;
+
+        // Human-readable summary of what's checked, e.g. "3 commits + working tree".
+        function selectionLabel() {
+          const n = selectedCommits.size;
+          const parts = [];
+          if (n) parts.push(`${n} commit${n !== 1 ? "s" : ""}`);
+          if (worktreeSelected) parts.push("working tree");
+          return parts.length ? parts.join(" + ") : "Nothing selected";
+        }
+
+        function selectionQuery() {
+          let q = `/api/diff?commits=${[...selectedCommits].map(encodeURIComponent).join(",")}`;
+          if (worktreeSelected) q += "&worktree=1";
+          return q;
+        }
+
+        // The problem is rapid checkbox toggling would fire a re-render per click and
+        // a slow older response could clobber a newer one.
+        // The way we solve this is with a short debounce plus a fetch id so only the
+        // latest response gets rendered.
+        // flow: Commits pane toggle -> scheduleSelectionFetch -> fetchSelectionDiff() <-- HERE
+        function fetchSelectionDiff() {
+          const myId = ++selectionFetchId;
+          return fetch(selectionQuery())
+            .then((r) => r.json())
+            .then((data) => {
+              if (myId !== selectionFetchId) return;
+              renderDiffView(data);
+            })
+            .catch(() => {
+              const target = document.getElementById("diff-target") || app;
+              target.innerHTML = `<div class="flex items-center justify-center py-20"><div class="text-[13px] text-gh-delFg">Failed to load diff</div></div>`;
+            });
+        }
+
+        function scheduleSelectionFetch() {
+          clearTimeout(selectionDebounce);
+          selectionDebounce = setTimeout(fetchSelectionDiff, 250);
+        }
+
+        const INFO_ICON =
+          '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><path d="M12 16v-4"/><path d="M12 8h.01"/></svg>';
+
+        // The problem is commit rows only have room for the first line of the message,
+        // but review context often lives in the body.
+        // The way we solve this is with a modal overlay showing the full message, opened
+        // by Enter on a focused row or its info button, closed by Esc / backdrop / X.
+        // flow: Commits pane row — user hits Enter (or clicks info) on a commit
+        function openCommitModal(hash) {
+          const c = commits.find((x) => x.hash === hash);
+          if (!c) return;
+          const overlay = document.createElement("div");
+          overlay.className = "fixed inset-0 z-[300] flex items-center justify-center p-6";
+          overlay.style.background = "rgba(0, 0, 0, 0.5)";
+          overlay.innerHTML = `
+            <div class="bg-gh-surface border border-gh-border max-w-[600px] w-full max-h-[70vh] flex flex-col">
+              <div class="flex items-center gap-3 px-4 py-3 border-b border-gh-border">
+                <span class="font-mono text-[12px] text-gh-text bg-gh-badgeBg border border-gh-border px-2 py-0.5">${esc(c.shortHash)}</span>
+                <span class="text-[12px] text-gh-muted truncate">${esc(c.author)} · ${esc(new Date(c.date).toLocaleString())}</span>
+                <button class="ml-auto text-gh-muted hover:text-gh-text p-0.5" data-modal-close title="Close">
+                  <svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M18 6 6 18"/><path d="m6 6 12 12"/></svg>
+                </button>
+              </div>
+              <div class="px-4 py-4 overflow-y-auto font-mono text-[13px] leading-relaxed text-gh-text whitespace-pre-wrap">${esc((c.body || c.subject).trim())}</div>
+            </div>`;
+          function close() {
+            overlay.remove();
+            document.removeEventListener("keydown", onKey);
+          }
+          function onKey(e) {
+            if (e.key === "Escape") close();
+          }
+          overlay.addEventListener("click", (e) => {
+            if (e.target === overlay || e.target.closest("[data-modal-close]")) close();
+          });
+          document.addEventListener("keydown", onKey);
+          document.body.appendChild(overlay);
+        }
+
+        // The problem is the reviewer needs to see every commit on the branch and
+        // choose which ones make up the diff under review.
+        // The way we solve this is by rendering one toggleable row per commit (plus a
+        // working-tree row) whose checkboxes mirror the selectedCommits set.
+        // flow: Commits pane — user toggles commits to scope the review diff
+        function buildCommitList() {
+          const ROW_CLASSES =
+            "commit-row group flex items-center gap-2 px-3 py-1.5 mx-1 cursor-pointer hover:bg-gh-badgeBg focus:bg-gh-activeBg outline-none";
+          let html = "";
+          if (bootstrap.hasWorktreeChanges) {
+            html += `<div class="${ROW_CLASSES}" tabindex="0" data-worktree-row title="Uncommitted changes (staged, unstaged, untracked)">
+              <input type="checkbox" class="viewed-checkbox commit-checkbox" data-worktree-toggle ${worktreeSelected ? "checked" : ""} />
+              <span class="text-[12px] italic truncate ${worktreeSelected ? "text-gh-text" : "text-gh-muted"}">Working tree</span>
+            </div>`;
+          }
+          for (const c of commits) {
+            const on = selectedCommits.has(c.hash);
+            html += `<div class="${ROW_CLASSES}" tabindex="0" data-commit="${esc(c.hash)}" title="${esc(c.subject)}">
+              <input type="checkbox" class="viewed-checkbox commit-checkbox" data-commit-toggle="${esc(c.hash)}" ${on ? "checked" : ""} />
+              <span class="font-mono text-[11px] text-gh-muted shrink-0">${esc(c.shortHash)}</span>
+              <span class="text-[12px] truncate ${on ? "text-gh-text" : "text-gh-muted"}">${esc(c.subject)}</span>
+              <button class="commit-info ml-auto shrink-0 text-gh-muted hover:text-gh-text opacity-0 group-hover:opacity-100 transition-opacity p-0.5" data-commit-info="${esc(c.hash)}" title="Show full commit message (Enter)">${INFO_ICON}</button>
+            </div>`;
+          }
+          return html;
+        }
+
+        // Asks the local server to open file:line in VS Code; falls back to the
+        // vscode:// URL scheme when the `code` CLI isn't installed.
+        async function openInEditor(file, line) {
+          if (!file) return;
+          const ln = line || 1;
+          try {
+            const res = await fetch(`/api/open?file=${encodeURIComponent(file)}&line=${ln}`);
+            if (!res.ok) throw new Error();
+          } catch {
+            window.location.href = `vscode://file${bootstrap.cwd}/${file}:${ln}`;
+          }
         }
 
         const Diff2Html = window.Diff2Html;
@@ -721,6 +844,8 @@
           '<svg class="w-4 h-4 text-gh-muted" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>';
         const COMMENT_ICON =
           '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>';
+        const OPEN_EDITOR_ICON =
+          '<svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M21 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h6"/><path d="m21 3-9 9"/><path d="M15 3h6v6"/></svg>';
 
         const RICH_DIFF_ICON =
           '<svg class="w-4 h-4" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 13H8"/><path d="M16 17H8"/><path d="M16 13h-2"/></svg>';
@@ -793,6 +918,7 @@
       <button class="collapse-btn text-gh-muted hover:text-gh-text p-0.5 transition-colors flex items-center justify-center" data-collapse="${esc(name)}" title="Toggle file">${CHEVRON_DOWN}</button>
       <span class="font-mono text-[12px] text-gh-text truncate">${esc(name)}</span>
       <button class="text-gh-muted hover:text-gh-text p-0.5 transition-colors" data-copy-diff="${esc(name)}" title="Copy file diff">${COPY_ICON}</button>
+      <button class="text-gh-muted hover:text-gh-text p-0.5 transition-colors" data-open-file="${esc(name)}" title="Open in VS Code">${OPEN_EDITOR_ICON}</button>
       <button class="file-comment-btn text-gh-muted hover:text-gh-text p-0.5 transition-colors" data-file-comment="${esc(name)}" title="Add file-level comment">${COMMENT_ICON}</button>
       ${richToggle}
       <span class="ml-auto flex items-center gap-3">
@@ -957,6 +1083,9 @@
         }
 
         function renderDiff() {
+          if (!parsedFiles.length) {
+            return `<div class="flex items-center justify-center py-24"><div class="text-[13px] text-gh-muted">No changes in the current selection</div></div>`;
+          }
           return viewMode === "split" ? renderSplitDiff() : renderUnifiedDiff();
         }
 
@@ -966,9 +1095,8 @@
           docListenerController = new AbortController();
           const docSignal = { signal: docListenerController.signal };
           currentDiffData = diffData;
-          annotations = new Map();
-          viewedFiles.clear();
-
+          // Understand: annotations and viewedFiles deliberately survive re-renders —
+          // toggling commits or switching split/unified must not wipe written feedback.
           parsedFiles = Diff2Html ? Diff2Html.parse(diffData.patch || "") : [];
           fileStats = new Map(
             parsedFiles.map((f) => {
@@ -983,32 +1111,19 @@
             totalDels += s.dels;
           }
 
-          const commitOptions = commits
-            .map(
-              (c) =>
-                `<option value="${esc(c.hash)}">${esc(c.shortHash)} ${esc(c.subject)}</option>`,
-            )
-            .join("");
-          const hasWt = diffData.hasWorktreeChanges;
-          const commitSelector = `<div class="relative inline-block">
-                <select id="commit-selector" class="opacity-0 absolute inset-0 w-full h-full cursor-pointer z-10">
-                  ${hasWt ? '<option value="working" selected>Working tree</option>' : ""}
-                  ${commitOptions}
-                  <option value="all"${hasWt ? "" : " selected"}>All commits</option>
-                </select>
-                <span id="commit-selector-display" class="inline-flex items-center gap-1.5 font-mono text-[12px] text-gh-text bg-gh-badgeBg border border-gh-border px-2 py-1 cursor-pointer select-none whitespace-nowrap">
-                  <span id="commit-selector-label">${commitLabel(hasWt ? "working" : "all")}</span>
-                  <svg class="w-3 h-3 text-gh-muted" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M3 5l3 3 3-3"/></svg>
-                </span>
-              </div>`;
+          document.title = `${selectionLabel()} · linemark`;
 
           app.innerHTML = `
     <div class="flex min-h-screen">
-      <div class="w-[260px] min-w-[260px] bg-gh-surface border-r border-gh-border sticky top-0 h-screen flex flex-col">
-        <div class="px-3 flex items-center border-b border-gh-border" style="height:47.5px">
+      <div class="w-[290px] min-w-[290px] bg-gh-surface border-r border-gh-border sticky top-0 h-screen flex flex-col">
+        <div class="px-3 flex items-center border-b border-gh-border shrink-0" style="height:47.5px">
+          <span class="text-[10px] font-medium uppercase tracking-[0.1em] text-gh-muted whitespace-nowrap">${commits.length} commit${commits.length !== 1 ? "s" : ""}</span>
+        </div>
+        <div class="max-h-[35vh] overflow-y-auto border-b border-gh-border py-1 shrink-0" id="commit-list">${buildCommitList()}</div>
+        <div class="px-3 pt-3 shrink-0">
           <span class="text-[10px] font-medium uppercase tracking-[0.1em] text-gh-muted whitespace-nowrap">${fileStats.size} file${fileStats.size !== 1 ? "s" : ""} changed</span>
         </div>
-        <div class="px-3 py-2">
+        <div class="px-3 py-2 shrink-0">
           <input type="text" id="file-filter" class="w-full bg-transparent text-gh-text border border-gh-borderSubtle px-2 py-1.5 text-[12px] font-mono focus:outline-none focus:border-gh-border placeholder:text-gh-mutedHalf transition-colors" placeholder="Filter files..." />
         </div>
         <div class="flex-1 overflow-y-auto">
@@ -1018,7 +1133,7 @@
       <div class="flex-1 min-w-0 flex flex-col">
         <div class="sticky top-0 z-[100] bg-gh-surface border-b border-gh-border px-4 flex items-center justify-between" style="height:47.5px">
           <div class="flex items-center gap-2">
-            ${commitSelector}
+            <span id="selection-label" class="font-mono text-[12px] text-gh-text bg-gh-badgeBg border border-gh-border px-2 py-1 select-none whitespace-nowrap">${selectionLabel()}</span>
             <span class="font-mono text-[11px] text-gh-muted ml-1">
               <span class="text-gh-addFg">+${totalAdds}</span>
               <span class="text-gh-delFg ml-1">-${totalDels}</span>
@@ -1062,6 +1177,103 @@
 
           const targetEl = document.getElementById("diff-target");
 
+          // --- Open in VS Code (floating per-row button) ---
+          let jumpBtn = null;
+          // The problem is a reviewer who spots an issue wants to jump from a diff row
+          // to that exact line in their editor without hunting for it.
+          // The way we solve this is with a single floating button that follows the
+          // hovered row; clicking it opens the row's file:line via openInEditor.
+          // flow: diff row hover -> mountJumpButton -> openInEditor -> /api/open <-- HERE
+          function mountJumpButton() {
+            jumpBtn = document.createElement("button");
+            jumpBtn.className =
+              "absolute z-20 hidden w-6 h-6 items-center justify-center bg-gh-surface90 border border-gh-border text-gh-muted hover:text-gh-blue transition-colors";
+            jumpBtn.title = "Open in VS Code";
+            jumpBtn.innerHTML = OPEN_EDITOR_ICON;
+            targetEl.style.position = "relative";
+            targetEl.appendChild(jumpBtn);
+            jumpBtn.addEventListener("click", () =>
+              openInEditor(jumpBtn.dataset.file, jumpBtn.dataset.line),
+            );
+          }
+
+          function hideJumpBtn() {
+            jumpBtn?.classList.add("hidden");
+            jumpBtn?.classList.remove("flex");
+          }
+
+          targetEl.addEventListener("mouseover", (e) => {
+            if (!jumpBtn || e.target.closest("button") === jumpBtn) return;
+            const row = e.target.closest(".diff-row");
+            // Rows with no right-side line (pure deletions) have nothing to open in
+            // the working tree, so the button hides there.
+            if (!row || !row.dataset.file || !row.dataset.right) return hideJumpBtn();
+            const rect = row.getBoundingClientRect();
+            const cont = targetEl.getBoundingClientRect();
+            jumpBtn.style.top = `${rect.top - cont.top + Math.max(0, (rect.height - 24) / 2)}px`;
+            jumpBtn.style.right = "10px";
+            jumpBtn.dataset.file = row.dataset.file;
+            jumpBtn.dataset.line = row.dataset.right;
+            jumpBtn.classList.remove("hidden");
+            jumpBtn.classList.add("flex");
+          });
+          targetEl.addEventListener("mouseleave", hideJumpBtn);
+
+          // The problem is comments must survive re-renders (commit toggles and
+          // split/unified switches) or reviewers would lose written feedback mid-review.
+          // The way we solve this is by re-anchoring each saved annotation to its row
+          // in the freshly rendered DOM; annotations whose lines aren't in the current
+          // selection stay in the map and still submit, they're just not shown.
+          // flow: commit toggle / view switch -> renderDiffView -> restoreAnnotations() <-- HERE
+          function restoreAnnotations() {
+            for (const [key, a] of annotations) {
+              if (a.type === "rich") continue; // rich view re-instruments its own blocks
+              if (a.type === "file") {
+                const headerEl = document.querySelector(
+                  `[data-file-header="${CSS.escape(a.file)}"]`,
+                );
+                if (headerEl)
+                  createCommentRow({
+                    key,
+                    label: `${esc(a.file)} (file comment)`,
+                    side: "file",
+                    anchorEl: headerEl,
+                    savedOnly: true,
+                    onSave: () => {},
+                    onEdit: () => showFileComment(a.file, headerEl),
+                  });
+                continue;
+              }
+              const sideAttr = a.side === "left" ? "left" : "right";
+              let anchorRow = null,
+                lineNumEl = null;
+              for (const row of document.querySelectorAll(
+                `.diff-row[data-file="${CSS.escape(a.file)}"]`,
+              )) {
+                const ln = row.querySelector(
+                  `.diff-linenum[data-side="${sideAttr}"][data-line="${a.toLine}"]`,
+                );
+                if (ln) {
+                  anchorRow = row;
+                  lineNumEl = ln;
+                  break;
+                }
+              }
+              if (!anchorRow) continue;
+              lineNumEl.classList.add("has-comment", "border-l-[3px]", "border-l-gh-accent");
+              createCommentRow({
+                key,
+                label: "",
+                side: a.side,
+                anchorEl: anchorRow,
+                savedOnly: true,
+                onSave: () => {},
+                onEdit: () => showCommentForm(anchorRow, a.side, lineNumEl, a.fromLine, a.toLine),
+              });
+            }
+            updateCommentCount();
+          }
+
           // --- View mode toggle ---
           document.getElementById("view-toggle").addEventListener("click", (e) => {
             const btn = e.target.closest("button[data-view]");
@@ -1076,38 +1288,53 @@
               }
             });
             targetEl.innerHTML = renderDiff();
+            restoreAnnotations();
+            mountJumpButton();
           });
 
-          // --- Commit selector ---
-          const commitSelect = document.getElementById("commit-selector");
-          function updateCommitLabel(selectEl) {
-            const label = document.getElementById("commit-selector-label");
-            if (!label || !selectEl) return;
-            const text = commitLabel(selectEl.value);
-            label.textContent = text;
-            document.title = `${text} · linemark`;
+          // --- Commits pane ---
+          // Updates selection state from a toggled row and kicks off a diff refresh.
+          // flow: Commits pane row/checkbox click -> applyRowToggle -> scheduleSelectionFetch
+          function applyRowToggle(row, on) {
+            if (row.dataset.commit) {
+              if (on) selectedCommits.add(row.dataset.commit);
+              else selectedCommits.delete(row.dataset.commit);
+            } else {
+              worktreeSelected = on;
+            }
+            const label = document.getElementById("selection-label");
+            if (label) label.textContent = selectionLabel();
+            document.title = `${selectionLabel()} · linemark`;
+            scheduleSelectionFetch();
           }
-          if (commitSelect) {
-            updateCommitLabel(commitSelect);
-            commitSelect.addEventListener("change", async () => {
-              const val = commitSelect.value;
-              updateCommitLabel(commitSelect);
-              commitSelect.disabled = true;
-              targetEl.innerHTML = `<div class="flex items-center justify-center py-20"><div class="text-[13px] text-gh-muted">Loading diff...</div></div>`;
-              try {
-                const res = await fetch(`/api/diff?commit=${encodeURIComponent(val)}`);
-                const data = await res.json();
-                commitSelect.disabled = false;
-                renderDiffView(data);
-                // Restore the commit selector value after re-render
-                const newSelect = document.getElementById("commit-selector");
-                if (newSelect) {
-                  newSelect.value = val;
-                  updateCommitLabel(newSelect);
-                }
-              } catch {
-                commitSelect.disabled = false;
-                targetEl.innerHTML = `<div class="flex items-center justify-center py-20"><div class="text-[13px] text-gh-delFg">Failed to load diff</div></div>`;
+
+          const commitListEl = document.getElementById("commit-list");
+          if (commitListEl) {
+            commitListEl.addEventListener("click", (e) => {
+              const infoBtn = e.target.closest("[data-commit-info]");
+              if (infoBtn) {
+                openCommitModal(infoBtn.dataset.commitInfo);
+                return;
+              }
+              const row = e.target.closest(".commit-row");
+              if (!row) return;
+              const cb = row.querySelector(".commit-checkbox");
+              // A direct checkbox click has already flipped natively; a click anywhere
+              // else on the row flips it here.
+              if (e.target !== cb) cb.checked = !cb.checked;
+              applyRowToggle(row, cb.checked);
+            });
+            commitListEl.addEventListener("keydown", (e) => {
+              const row = e.target.closest(".commit-row");
+              if (!row) return;
+              if (e.key === "Enter" && row.dataset.commit) {
+                e.preventDefault();
+                openCommitModal(row.dataset.commit);
+              } else if (e.key === " ") {
+                e.preventDefault();
+                const cb = row.querySelector(".commit-checkbox");
+                cb.checked = !cb.checked;
+                applyRowToggle(row, cb.checked);
               }
             });
           }
@@ -1120,14 +1347,16 @@
             localStorage.setItem("linemark-theme", mode);
             const hljsLink = document.querySelector('link[href*="highlight"]');
             if (hljsLink) {
-              hljsLink.href =
-                mode === "light"
-                  ? "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css"
-                  : "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css";
+              // Understand: integrity must be set BEFORE href — changing href starts
+              // the fetch immediately, and a stale hash gets the stylesheet blocked.
               hljsLink.integrity =
                 mode === "light"
                   ? "sha384-eFTL69TLRZTkNfYZOLM+G04821K1qZao/4QLJbet1pP4tcF+fdXq/9CdqAbWRl/L"
                   : "sha384-wH75j6z1lH97ZOpMOInqhgKzFkAInZPPSPlZpYKYTOqsaizPvhQZmAtLcPKXpLyH";
+              hljsLink.href =
+                mode === "light"
+                  ? "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github.min.css"
+                  : "https://cdn.jsdelivr.net/gh/highlightjs/cdn-release@11.9.0/build/styles/github-dark.min.css";
             }
             themeToggle
               .querySelector(".theme-icon-dark")
@@ -1660,6 +1889,12 @@
               return;
             }
 
+            const openBtn = e.target.closest("[data-open-file]");
+            if (openBtn) {
+              openInEditor(openBtn.dataset.openFile, 1);
+              return;
+            }
+
             const richToggle = e.target.closest("[data-rich-toggle]");
             if (richToggle) {
               const fileName = richToggle.dataset.richToggle;
@@ -1913,6 +2148,10 @@
             } catch {}
             app.innerHTML = renderEndScreen(approved ? "Changes approved" : "Feedback sent");
           }
+
+          restoreAnnotations();
+          mountJumpButton();
+          updateViewedCount();
         } // end renderDiffView
 
         // --- Loading state ---
@@ -1923,25 +2162,20 @@
           </div>
         </div>`;
 
-        // Fetch commits and diff in parallel
-        Promise.all([
-          fetch("/api/commits")
-            .then((r) => r.json())
-            .catch(() => []),
-          fetch(`/api/diff?commit=${bootstrap.hasWorktreeChanges ? "working" : "all"}`).then((r) =>
-            r.json(),
-          ),
-        ])
-          .then(([commitList, diffData]) => {
+        // The commit list comes first because the default selection depends on it:
+        // just the working tree when it has changes, otherwise every commit.
+        // flow: page load — reviewer opens linemark in the browser
+        fetch("/api/commits")
+          .then((r) => r.json())
+          .catch(() => [])
+          .then((commitList) => {
             commits = commitList;
-            renderDiffView(diffData);
-          })
-          .catch(() => {
-            app.innerHTML = `<div class="flex items-center justify-center min-h-screen">
-            <div class="text-center">
-              <p class="text-[13px] text-gh-delFg">Failed to load diff data</p>
-            </div>
-          </div>`;
+            if (bootstrap.hasWorktreeChanges) {
+              worktreeSelected = true;
+            } else {
+              for (const c of commits) selectedCommits.add(c.hash);
+            }
+            return fetchSelectionDiff();
           });
       })();
     </script>
